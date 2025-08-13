@@ -1,142 +1,256 @@
-Sorya Next (Monolith)
-Full‑stack Next.js (App Router) platform:
+# Sorya Next (Monolith)
 
-AI Chat (OpenAI “gpt-5” placeholder model) with per-user history + credit metering
-Project artifacts (generated code snapshots) with publish & GitHub repo create/push
-Stripe subscriptions (plans) + credit ledger (consumed per AI token & generation)
-GitHub OAuth (auth + repo access) & OpenAI API integration
-MySQL via Prisma (no Docker). Deployable to Vercel + external MySQL (PlanetScale / RDS)
-Scales via stateless routes, connection pooling, background job hooks (optional)
-1. Tech Stack
-Next.js 14+ (App Router, Route Handlers)
-React 18
-Prisma ORM + MySQL
-NextAuth (GitHub provider) (or replace with your auth)
-Stripe (billing + webhooks)
-OpenAI Node SDK
-Zod (validation)
-jose (JWT signing where needed)
-nodemailer (optional for future email)
-Encryption: AES-256-GCM (crypto) for external tokens
-Rate limiting (optional: Upstash Redis or Vercel KV)
-2. High-Level Architecture
-Single Next.js app with these domains:
+An AI workspace where users describe what they want to build in plain language and the platform generates, deploys, iterates, classifies, and (optionally) publishes their software projects.
 
-/api/auth/* (NextAuth)
-/api/chat (AI chat + credit debit)
-/api/projects (CRUD + preview + publish)
-/api/github/* (repo init, push)
-/api/billing/* (Stripe portal) + /api/webhooks/stripe
-/dashboard/* (user UI)
-/projects/[id] (history, preview) Use server actions or route handlers for mutations (stick to route handlers for clarity). Background tasks (e.g., long generation) can be deferred to a queue provider later; initially synchronous.
-3. Folder Structure
-/ prisma/ schema.prisma src/ app/ layout.tsx page.tsx api/ route.ts route.ts route.ts (POST create, GET list) route.ts route.ts route.ts route.ts route.ts route.ts route.ts route.ts dashboard/ page.tsx chat/ page.tsx page.tsx lib/ db.ts auth.ts openai.ts credits.ts billing.ts github.ts encrypt.ts rateLimit.ts (optional) components/ ChatUI.tsx ProjectPreview.tsx styles/ .env.local
+## Product Positioning & UI Inspiration (New)
+Sorya’s user experience is inspired by the streamlined flow of lovable.dev: a single conversational surface that continuously turns ideas into running apps. Difference:
+- Lovable approach: multi-service backend; Sorya: **monolithic Next.js** app for faster iteration and simpler ops.
+- Unified board + chat: You remain in one primary screen (project board + active chat panel) rather than navigating multiple detached views.
+- Immediate feedback loop: Prompt → generation → (auto) deploy cycle happens inline with visible status chips and diff summaries.
+- Visual Language: clean neutral theme, soft elevations, pill tags for project types, minimal chrome, focus on content.
+- Interaction Pattern: left sidebar (project list / filters), central chat & system routine updates, right collapsible panels (Deployment, Snapshots, Settings) – all optional for MVP (start with chat + simple project list). No proprietary assets from lovable.dev are copied—only high‑level UX concepts.
 
-4. Data Model (Prisma Sketch)
-User (id, name, email, image, createdAt) Account (NextAuth OAuth) Session (NextAuth) Project (id, userId, name, status, repoFullName?, lastSnapshotId?, createdAt, updatedAt) ProjectSnapshot (id, projectId, summary, aiTokensIn, aiTokensOut, cost, storedAt, files(json)) ChatMessage (id, userId, projectId?, role, content, tokensIn, tokensOut, cost, createdAt) CreditLedger (id, userId, delta, reason, meta json, createdAt) StripeCustomer (id, userId, stripeCustomerId, currentPlan, renewsAt, createdAt, updatedAt) ApiToken (optional) EncryptedSecret (id, userId, provider, label, ciphertext, createdAt) (Adjust naming as needed.)
+Design Principles:
+1. Conversational first: Everything originates from the chat (create, modify, redeploy, publish).
+2. Transparency: Routine steps surface as inline status messages ("Deploying...", "Build failed, patching...").
+3. Single Source of Truth: Monolithic architecture keeps latency low and state consistent.
+4. Progressive Reveal: Advanced actions (publish to GitHub, classification override) appear contextually when relevant.
+5. Fast Perception: Optimistic UI updates with eventual confirmation from routine events.
 
-5. Environment Variables (.env.local)
-DATABASE_URL=mysql://user:pass@localhost:3306/sorya NEXTAUTH_SECRET= (openssl rand -base64 32) NEXTAUTH_URL=http://localhost:3000 GITHUB_CLIENT_ID= GITHUB_CLIENT_SECRET= OPENAI_API_KEY= OPENAI_MODEL=gpt-5 (or actual model id) STRIPE_SECRET_KEY= STRIPE_WEBHOOK_SECRET= STRIPE_PRICE_BASIC=price_xxx STRIPE_PRICE_PRO=price_yyy ENCRYPTION_KEY=base64-32-bytes (e.g. openssl rand -base64 32)
+MVP Visual Scope (Today):
+- Auth screens: minimal centered card.
+- Dashboard/Board: simple vertical list (later upgrade to grid/kanban). Each project card: name, type tag (if present), last deployment status (chip), deployment URL button.
+- Project / Chat: split layout (chat messages scroll column; input composer fixed at bottom; top bar with project name + quick actions Redeploy / Publish (disabled until implemented)).
+- Status Messages: assistant system messages styled distinct from AI reply content.
+- Dark mode toggle (optional nice-to-have) – can defer.
 
-Optional
+Later Enhancements:
+- Side diff viewer (tab) per assistant code generation.
+- Inline file tree preview with search.
+- Drag‑filter board with project type lanes.
+- Deployment timeline visualization.
+
+## Core User Story (Updated)
+1. Create an account with the built‑in user system (email/password or future magic link). GitHub is **optional** and only needed when you want to publish code to a GitHub repository.
+2. Open the chat and ask for something (e.g. “Create me a web2 app for cropping images”).
+3. The AI creates a new Project, generates the necessary application files, and stores a snapshot.
+4. A background **Routine** runs: prepares a Vercel project (using your or the platform’s Vercel credentials), deploys it, observes build / runtime errors, fixes them through additional code edits, re‑deploys until healthy (bounded attempts), and records the deployment URL.
+5. You preview the live app (Vercel deployment link) directly inside the dashboard.
+6. If satisfied, you can connect GitHub (if not already) and publish: the platform creates a repo (or uses an existing one), pushes the generated code, and from then on each subsequent chat instruction that pertains to that project updates the repository (commit + push) and triggers a fresh Vercel deployment.
+7. Every chat exchange is recorded; each assistant action (code gen, deploy, classify, publish) is a structured Routine step saved for traceability.
+8. The AI auto‑classifies each project into one of the types: `Internal tools`, `Website`, `Personal`, `Consumer App`, `B2B App`, `Prototype` and stores that tag on the Project.
+9. On the main chat / dashboard screen you have a board view with those tags as filters, showing previews (name, last deployment status, repo link if any, credit usage summary).
+10. Credits meter usage (per AI token + generation/deployment cycles). Subscriptions add monthly credits.
+
+## High-Level Feature List
+- Natural language → runnable app generation.
+- Automated iterative deployment pipeline to Vercel (create project, upload/build, error‑aware fix loop, redeploy).
+- Optional GitHub publishing & continuous AI‑driven commits.
+- Project snapshots and version history.
+- Project type auto‑classification + filtering board.
+- Per‑user chat history and routine audit trail.
+- Credit ledger + subscription billing (Stripe).
+- Secure storage of external tokens (GitHub, Vercel) with encryption.
+
+## Routines Concept
+A Routine = a structured sequence triggered by a user chat message. Example steps:
+1. Interpret request
+2. Generate / modify code
+3. Classify project type (if new or changed significantly)
+4. Persist snapshot
+5. Deploy (create/update Vercel project)
+6. Monitor build
+7. Fix errors (loop with patch + redeploy)
+8. Finalize (store deployment URL, status, token usage)
+9. (Optional) Publish to GitHub / push updates
+
+Each step is recorded so the system (and user) can inspect what happened and why credits were consumed.
+
+## Tech Stack
+- Next.js 14+ (App Router, Route Handlers)
+- React 18
+- Prisma ORM + MySQL
+- NextAuth (core user auth using credentials; GitHub provider only for repo operations)
+- Stripe (subscriptions, webhooks)
+- OpenAI Node SDK (model placeholder `gpt-5` or actual)
+- Zod (validation)
+- jose (JWT signing where needed)
+- nodemailer (optional future email flows)
+- AES-256-GCM encryption for external tokens (GitHub, Vercel)
+- Optional rate limiting (Upstash Redis / Vercel KV)
+
+## Updated Architecture Domains
+- `/api/auth/*` (NextAuth: credentials + optional GitHub provider connect flow)
+- `/api/chat` (AI chat + credit debit + routine initiation)
+- `/api/projects` (CRUD, preview, classification metadata)
+- `/api/projects/[id]/deploy` (manual retrigger if needed)
+- `/api/github/*` (init repo, push, connect)
+- `/api/vercel/*` (project creation, deployment status polling)
+- `/api/billing/*` + `/api/webhooks/stripe` (credit grants / plan changes)
+- `/dashboard/*` (project board + filters)
+- `/projects/[id]` (detail: chat thread, snapshots, deployments)
+
+## Folder Structure (Planned)
+```
+/ prisma/
+  schema.prisma
+/src/
+  app/
+    layout.tsx
+    page.tsx (board + tag filters)
+    api/
+      auth/[...nextauth]/route.ts
+      chat/route.ts
+      projects/route.ts (POST create, GET list with tag filters)
+      projects/[id]/route.ts (GET, PATCH)
+      projects/[id]/preview/route.ts
+      projects/[id]/deploy/route.ts
+      github/repo/[projectId]/init/route.ts
+      github/repo/[projectId]/push/route.ts
+      vercel/project/[projectId]/route.ts
+      vercel/deploy/[projectId]/status/route.ts
+      billing/subscribe/route.ts
+      webhooks/stripe/route.ts
+  lib/
+    db.ts
+    auth.ts
+    openai.ts
+    credits.ts
+    billing.ts
+    github.ts
+    vercel.ts
+    deployRoutine.ts
+    classify.ts
+    encrypt.ts
+    rateLimit.ts (optional)
+  components/
+    ChatUI.tsx
+    ProjectBoard.tsx
+    ProjectCard.tsx
+    ProjectPreview.tsx
+    DeploymentStatus.tsx
+  routines/
+    index.ts (orchestration helpers)
+  styles/
+.env.local
+```
+
+## Data Model (Updated Sketch)
+```
+User (id, email, name?, image?, passwordHash, createdAt)
+Account (NextAuth OAuth for GitHub: provider, providerAccountId, access_token (encrypted), userId, ...)
+Session (NextAuth)
+Project (
+  id, userId, name, status, type (enum: INTERNAL_TOOLS | WEBSITE | PERSONAL | CONSUMER_APP | B2B_APP | PROTOTYPE),
+  repoFullName?, vercelProjectId?, lastDeploymentId?, lastSnapshotId?, createdAt, updatedAt
+)
+ProjectSnapshot (
+  id, projectId, summary, aiTokensIn, aiTokensOut, cost, storedAt, files(json)
+)
+Deployment (
+  id, projectId, vercelDeploymentId, url, state, attempt, buildLogExcerpt?, createdAt, updatedAt
+)
+Routine (
+  id, projectId?, userId, triggerMessageId?, kind, status, steps(json), startedAt, finishedAt
+)
+ChatMessage (
+  id, userId, projectId?, role (user|assistant|system), content, tokensIn, tokensOut, cost, createdAt
+)
+CreditLedger (id, userId, delta, reason, meta json, createdAt)
+StripeCustomer (id, userId, stripeCustomerId, currentPlan, renewsAt, createdAt, updatedAt)
+EncryptedSecret (id, userId, provider (github|vercel|other), label, ciphertext, createdAt)
+```
+
+## Environment Variables (.env.local)
+```
+DATABASE_URL=mysql://user:pass@localhost:3306/sorya
+NEXTAUTH_SECRET=...
+NEXTAUTH_URL=http://localhost:3000
+# Core user auth (credentials) handled internally
+# Optional GitHub (only if publishing)
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+# Vercel integration
+VERCEL_TOKEN= (personal/team token with project:create, deployment permissions)
+VERCEL_TEAM_ID= (optional if team scope)
+# AI
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5
+# Billing
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_PRICE_BASIC=price_xxx
+STRIPE_PRICE_PRO=price_yyy
+# Encryption
+ENCRYPTION_KEY=base64-32-bytes (openssl rand -base64 32)
+# Optional Rate Limit
 RATE_LIMIT_REDIS_URL=
-
-If using NEXT_PUBLIC_ values (minimize secrets):
 NEXT_PUBLIC_APP_NAME=Sorya
+```
 
-6. Local Setup (Mac)
-brew install mysql brew services start mysql mysql -u root -p CREATE DATABASE sorya; CREATE USER 'sorya'@'%' IDENTIFIED BY 'soryapass'; GRANT ALL ON sorya.* TO 'sorya'@'%'; Update DATABASE_URL accordingly.
+## Chat to Deployment Flow
+1. User sends request.
+2. Validate + classify intent.
+3. Generate / modify code (diff oriented after first snapshot using existing repo or local virtual FS).
+4. Persist snapshot & ledger debit.
+5. If deploy enabled: ensure Vercel project (create if missing) → upload / deploy.
+6. Poll status; if error: extract structured errors, request AI patch; commit patch (local or GitHub if published); redeploy (bounded attempts, e.g. max 5).
+7. Success: update Deployment & Project status.
+8. Return deployment URL & routine summary to user.
 
-pnpm create next-app sorya-next --typescript --app --eslint cd sorya-next pnpm add @prisma/client prisma next-auth @next-auth/prisma-adapter zod openai stripe jose pnpm add -D typescript @types/node @types/react @types/bcrypt pnpm add bcrypt (if using password auth) (optional) pnpm add @octokit/rest pnpm add date-fns pnpm add react-query (if you want client caching) npx prisma init --datasource-provider mysql
+## Publishing to GitHub (Optional Stage)
+- User clicks “Connect GitHub” → OAuth → store encrypted token.
+- Initialize repo (if none) and push full snapshot.
+- Subsequent routines operate directly on repo (pull -> patch -> push) for transparency.
 
-Replace schema.prisma with your final model; then: npx prisma migrate dev --name init npx prisma generate
+## Classification Logic
+- Heuristic + model prompt based on description, dependencies, structure and generated files.
+- Stored as Project.type; user can override manually (manual override flagged).
 
-7. Auth (NextAuth + GitHub)
-Configure /app/api/auth/[...nextauth]/route.ts:
+## Credits System
+- Charge per combined token usage + per deploy attempt (configurable weight). E.g. base token unit cost + small cost per build iteration.
+- Monthly grants via Stripe subscription webhooks.
+- Display remaining credits prominently in ChatUI.
 
-GitHubProvider with clientId & clientSecret
-PrismaAdapter
-session: { strategy: 'jwt' }
-In callbacks.jwt store user id & maybe plan This GitHub OAuth also provides access token (in Account) but you still must request repo scopes. Ensure scope=repo in provider config.
-8. OpenAI Integration
-lib/openai.ts: create client with apiKey. chat route:
+## Security Highlights
+- Encrypt Vercel / GitHub tokens with AES-256-GCM using ENCRYPTION_KEY.
+- Never send third‑party tokens to client; client only receives deployment URLs & statuses.
+- Strict authorization checks (userId on every Project / Deployment / Routine access).
+- Input validation everywhere with Zod.
 
-Validate body (messages array)
-Compute approximate tokens (optional) or rely on model response usage
-Call openai.chat.completions.create
-Record ChatMessage rows + ledger debit
-Cost logic (credits): Define cost per 1K tokens; when a chat completes: delta = -ceil((tokensIn + tokensOut)/1000 * unitCost) Insert CreditLedger row.
+## Minimal Implementation Order (Revised)
+1. Core user auth (credentials) + User model + Prisma migrations
+2. Credits + ledger baseline
+3. Basic chat + snapshot + project creation
+4. Classification (simple heuristic placeholder)
+5. Vercel deploy integration (single pass)
+6. Iterative deploy fix loop (bounded retries)
+7. Project board with tag filters
+8. GitHub connect + initial publish
+9. Continuous repo update from chat
+10. Stripe subscriptions & webhook credit grants
+11. Routines audit trail + deployment history UI
+12. Hardening (encryption, rate limiting, improved classifier)
 
-9. Credit System
-On user signup give initial credits (e.g. 5,000). For Stripe subscription upgrade:
+## Testing Strategy
+- Unit: classification, credit debit logic, deployment patch extraction.
+- Integration: chat route triggers routine (mock OpenAI + Vercel APIs).
+- E2E: create project from prompt → see live deployment → publish to GitHub → modify via chat.
 
-Add monthly credit grant on successful invoice.payment_succeeded (Stripe webhook) -> Insert CreditLedger with positive delta.
-Function getUserCredits: SUM(ledger.delta).
+## Deployment
+- Host on Vercel (main app).
+- Use managed MySQL (PlanetScale / RDS).
+- Provide Vercel token (server-side only) for deployment orchestration if not using per-user tokens.
+- Configure Stripe webhook → `/api/webhooks/stripe`.
 
-Prevent request if credits below needed threshold.
+## Future Enhancements
+- Multi‑step planning agent (architect → implementer → fixer roles).
+- On‑the‑fly environment variable suggestions & secret manager UI.
+- Rollback to previous snapshot & automatic redeploy.
+- Rich diff visualizations per routine step.
+- Multi‑tenant teams & shared projects.
+- Additional project type taxonomy & confidence scoring.
+- Support for other deployment targets (Render, Fly.io, AWS Amplify).
 
-10. Stripe Setup
-Create products/prices in dashboard.
-Store price IDs in env.
-/api/billing/subscribe: create Checkout Session (mode=subscription, success_url, cancel_url).
-Webhook handler /api/webhooks/stripe verifies signature, handles: customer.subscription.created / updated invoice.payment_succeeded -> grant credits (plan tier mapping) Store stripeCustomerId (attach to user if absent).
-11. GitHub Repo Creation & Push
-Use @octokit/rest with user’s OAuth access token (scoped). Routes: POST /api/github/repo/[projectId]/init
-
-Ensure project belongs to user.
-Create repo (octokit.repos.createForAuthenticatedUser).
-Update Project.repoFullName. POST /api/github/repo/[projectId]/push
-Accept snapshotId or build a new snapshot from ProjectSnapshot.files.
-For each file: PUT /repos/{owner}/{repo}/contents/{path} (base64 content; include sha if updating). Snapshot capturing:
-When user clicks “Generate” store files(json: [{path, contentHash, size, snippetOrFull}]). Security: never store user GitHub tokens unencrypted (Encrypt Account.access_token before persisting or store plaintext only if DB encrypted volume—better encrypt). Optional: GitHub App for better permissions, but OAuth is simpler start.
-12. Project Preview
-Store minimal file metadata in ProjectSnapshot. /api/projects/[id]/preview returns sanitized snippet list (no secrets) for UI.
-
-13. Chat History
-Chat messages table keyed by userId + optional projectId. /api/chat:
-
-POST: { projectId?, messages } (append new user message, call model, save assistant reply).
-GET /api/chat/history?projectId=... returns recent messages (limit 100).
-14. Rate Limiting (Optional)
-If you expect heavy traffic:
-
-Add a middleware using a Redis counter (RATE_LIMIT_REDIS_URL) track IP/user per minute.
-Abort with 429 if exceeded.
-15. Performance & Scaling
-Use Edge runtime only for non-DB static endpoints; DB needs Node runtime.
-PlanetScale or Neon (if switching to Postgres) for horizontal scaling & connection pooling.
-Add caching (KV) for project previews snapshots (key: snapshotId).
-Use incremental static generation only for marketing pages.
-Offload heavy generation to a queue (Upstash QStash / AWS SQS) later.
-16. Security Considerations
-Encrypt external tokens (GitHub) using ENCRYPTION_KEY (32-byte base64). AES-256-GCM.
-Never expose Stripe secret or OpenAI key to client—proxy.
-Validate all inputs with Zod.
-Enforce authorization on every project / snapshot route.
-17. Scripts
-"dev": next dev "build": next build "start": next start "prisma:migrate": prisma migrate dev "prisma:generate": prisma generate
-
-18. Minimal Implementation Order
-Auth + User model + Prisma + migrations
-Credits + ledger + OpenAI chat basic
-Project CRUD + snapshot store (mock generated files)
-Preview route
-Stripe subscription & webhook -> credit grants
-GitHub repo init + push (after snapshots)
-UI pages (chat, dashboard, projects, integrate)
-Hardening (encryption, rate limit)
-19. Testing
-Unit: business logic (credits.ts, github.ts)
-Integration: route handlers with next test environment (vitest / jest)
-E2E: Playwright (login, create project, preview, chat, subscribe).
-20. Deployment
-Deploy to Vercel.
-Use managed MySQL (PlanetScale).
-Set all env vars in Vercel dashboard.
-Stripe Webhook: create endpoint (live & test) pointing to /api/webhooks/stripe.
-21. Future Enhancements
-Background async generation pipeline
-GitHub App migration
-Usage analytics & per-plan limits
-Multi-team support
-Fine-grained token usage dashboards
+---
+This README reflects the updated requirements: generic user auth, routine-based chat automation, Vercel auto deployment, optional GitHub publishing, classification tags, a filterable project board, and a UI/UX direction inspired (conceptually) by lovable.dev while remaining an original monolithic implementation.

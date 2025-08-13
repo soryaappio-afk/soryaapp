@@ -1,0 +1,221 @@
+/*!*****************************************************************************************************************************************************************************************************************************************************************!*\
+  !*** css ./node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[13].oneOf[12].use[2]!./node_modules/next/dist/build/webpack/loaders/postcss-loader/src/index.js??ruleSet[1].rules[13].oneOf[12].use[3]!./src/app/globals.css ***!
+  \*****************************************************************************************************************************************************************************************************************************************************************/
+html,
+body {
+    margin: 0;
+    padding: 0;
+}
+
+:root {
+    --bg: #f8f9fa;
+    --bg-alt: #ffffff;
+    --border: #e5e5e5;
+    --text: #111;
+    --text-dim: #555;
+    --primary: #111;
+    --accent: #2563eb;
+    --danger: #b91c1c;
+    --overlay: rgba(0, 0, 0, 0.35);
+    --hero-start: #6366f1;
+    --hero-end: #ec4899;
+    --panel-bg: rgba(255, 255, 255, 0.65);
+    --panel-border: rgba(0, 0, 0, 0.08);
+    --chat-gradient: radial-gradient(circle at 40% 30%, rgba(99, 102, 241, 0.35), transparent 60%), radial-gradient(circle at 70% 65%, rgba(236, 72, 153, 0.35), transparent 70%);
+}
+
+[data-theme='dark'] {
+    --bg: #0f1115;
+    --bg-alt: #161a20;
+    --border: #2a2f36;
+    --text: #f5f6f7;
+    --text-dim: #9aa3af;
+    --primary: #f5f6f7;
+    --accent: #3b82f6;
+    --danger: #f87171;
+    --overlay: rgba(0, 0, 0, 0.6);
+    --hero-start: #6366f1;
+    --hero-end: #db2777;
+    --panel-bg: rgba(22, 26, 32, 0.55);
+    --panel-border: rgba(255, 255, 255, 0.08);
+    --chat-gradient: radial-gradient(circle at 35% 30%, rgba(99, 102, 241, 0.28), transparent 60%), radial-gradient(circle at 70% 70%, rgba(219, 39, 119, 0.28), transparent 70%);
+}
+
+body {
+    font-family: system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    transition: background .25s, color .25s;
+}
+
+a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+button {
+    cursor: pointer;
+}
+
+/* Utility */
+.theme-surface {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+}
+
+.text-dim {
+    color: var(--text-dim);
+}
+
+.border {
+    border: 1px solid var(--border);
+}
+
+/* Modal overlay adapt */
+.modal-overlay {
+    background: var(--overlay);
+}
+
+/* Scrollbar subtle theming */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 6px;
+}
+
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+}
+
+.hero-gradient-wrapper {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.hero-gradient-wrapper:before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 1200px;
+    height: 1200px;
+    transform: translate(-50%, -50%);
+    background: radial-gradient(circle at 30% 30%, var(--hero-start), rgba(255, 255, 255, 0) 60%), radial-gradient(circle at 70% 70%, var(--hero-end), rgba(255, 255, 255, 0) 65%);
+    filter: blur(120px) saturate(140%);
+    opacity: .55;
+}
+
+[data-theme='dark'] .hero-gradient-wrapper:before {
+    filter: blur(140px) saturate(160%);
+    opacity: .45;
+}
+
+/* Pane styling */
+.split-pane-layout {
+    display: flex;
+    gap: 1.25rem;
+    align-items: stretch;
+}
+
+.split-pane-left {
+    flex: 1 1 58%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.split-pane-right {
+    flex: 1 1 42%;
+    min-width: 260px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+
+.status-panel {
+    background: var(--panel-bg);
+    backdrop-filter: blur(22px) saturate(140%);
+    -webkit-backdrop-filter: blur(22px) saturate(140%);
+    border: 1px solid var(--panel-border);
+    border-radius: 20px;
+    padding: 1rem 1.1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: .75rem;
+    box-shadow: 0 4px 30px -10px rgba(0, 0, 0, 0.25);
+}
+
+.status-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+    max-height: 340px;
+    overflow-y: auto;
+}
+
+.status-steps li {
+    font-size: 11px;
+    letter-spacing: .4px;
+    text-transform: uppercase;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.status-steps li span {
+    flex: 1 1;
+}
+
+.step-active {
+    color: var(--accent);
+}
+
+.step-done {
+    color: var(--text-dim);
+}
+
+.loader-ring {
+    width: 34px;
+    height: 34px;
+    position: relative;
+}
+
+.loader-ring:before,
+.loader-ring:after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 3px solid transparent;
+}
+
+.loader-ring:before {
+    border-top-color: var(--accent);
+    border-right-color: var(--accent);
+    animation: spin .9s linear infinite;
+}
+
+.loader-ring:after {
+    border-bottom-color: var(--hero-end);
+    border-left-color: var(--hero-end);
+    animation: spin 1.2s linear infinite reverse;
+    opacity: .75;
+}

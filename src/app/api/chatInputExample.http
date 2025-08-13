@@ -1,0 +1,7 @@
+### Example chat request (replace PROJECT_ID if you want to reuse)
+POST http://localhost:3000/api/chat
+Content-Type: application/json
+
+{
+  "prompt": "Create me a simple landing page about a crop image tool"
+}

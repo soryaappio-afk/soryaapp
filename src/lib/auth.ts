@@ -4,6 +4,11 @@ import GitHubProvider from 'next-auth/providers/github';
 import GoogleProvider from 'next-auth/providers/google';
 import type { NextAuthOptions } from 'next-auth';
 import { prisma } from '@/src/lib/db';
+// Ensure NEXTAUTH_URL is set in Vercel preview / production even if a custom domain isn't yet attached.
+// Vercel automatically provides VERCEL_URL (e.g. my-app-abc123.vercel.app). We synthesize https URL if absent.
+if (process.env.VERCEL_URL && !process.env.NEXTAUTH_URL) {
+    process.env.NEXTAUTH_URL = `https://${process.env.VERCEL_URL}`;
+}
 import bcrypt from 'bcryptjs';
 
 export const authOptions: NextAuthOptions = {

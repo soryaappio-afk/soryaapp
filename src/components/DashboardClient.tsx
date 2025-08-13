@@ -1,13 +1,9 @@
 "use client";
 import React, { useState, useMemo } from 'react';
 import Link from 'next/link';
-import DashboardIcon from '@mui/icons-material/DashboardCustomize';
-import HomeIcon from '@mui/icons-material/Home';
 import ViewWeekIcon from '@mui/icons-material/ViewWeek';
 import GridViewIcon from '@mui/icons-material/GridView';
-import StatusChip from '@mui/icons-material/Adjust';
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
-import { signOut } from 'next-auth/react';
+import SiteHeader from '@/src/components/SiteHeader';
 
 const STATUSES = ['NEW', 'DEPLOYING', 'LIVE', 'ERROR'] as const;
 const TAGS = ['Internal tools', 'Website', 'Personal', 'Consumer App', 'B2B App', 'Prototype'];
@@ -28,21 +24,18 @@ export default function DashboardClient({ projects, credits, session }: Props) {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-            <div style={{ display: 'flex', alignItems: 'center', padding: '1rem 1.25rem', borderBottom: '1px solid var(--border)', background: 'var(--bg-alt)', gap: 16 }}>
-                <h1 style={{ fontSize: 20, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}><DashboardIcon sx={{ fontSize: 24 }} /> Dashboard</h1>
-                <Link href="/" style={{ display: 'flex', alignItems: 'center', fontSize: 12, color: 'var(--accent)', gap: 4 }}><ArrowBackIcon sx={{ fontSize: 16 }} /> Home</Link>
-                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <strong style={{ fontSize: 11, letterSpacing: '.5px' }}>Type:</strong>
-                    <FilterPill active={!filter} label="All" onClick={() => setFilter(null)} />
-                    {TAGS.map(t => <FilterPill key={t} active={filter === t} label={t} onClick={() => setFilter(t)} />)}
-                    <strong style={{ fontSize: 11, letterSpacing: '.5px', marginLeft: 12 }}>Status:</strong>
-                    <FilterPill active={!statusFilter} label="All" onClick={() => setStatusFilter(null)} />
-                    {STATUSES.map(s => <FilterPill key={s} active={statusFilter === s} label={s} onClick={() => setStatusFilter(s)} />)}
-                    <button type="button" onClick={() => setLaneMode(m => !m)} style={{ fontSize: 11, padding: '.4rem .7rem', borderRadius: 20, border: '1px solid var(--border)', background: laneMode ? 'var(--primary)' : 'var(--bg)', color: laneMode ? '#fff' : 'var(--text)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {laneMode ? <GridViewIcon sx={{ fontSize: 14 }} /> : <ViewWeekIcon sx={{ fontSize: 14 }} />}
-                        {laneMode ? 'Grid' : 'Lanes'}
-                    </button>
-                </div>
+            <SiteHeader credits={credits} session={session} />
+            <div style={{ display: 'flex', alignItems: 'center', padding: '.75rem 1.25rem', borderBottom: '1px solid var(--border)', background: 'var(--bg)', gap: 16, flexWrap: 'wrap' }}>
+                <strong style={{ fontSize: 12, letterSpacing: '.5px' }}>Type:</strong>
+                <FilterPill active={!filter} label="All" onClick={() => setFilter(null)} />
+                {TAGS.map(t => <FilterPill key={t} active={filter === t} label={t} onClick={() => setFilter(t)} />)}
+                <strong style={{ fontSize: 12, letterSpacing: '.5px', marginLeft: 12 }}>Status:</strong>
+                <FilterPill active={!statusFilter} label="All" onClick={() => setStatusFilter(null)} />
+                {STATUSES.map(s => <FilterPill key={s} active={statusFilter === s} label={s} onClick={() => setStatusFilter(s)} />)}
+                <button type="button" onClick={() => setLaneMode(m => !m)} style={{ fontSize: 11, padding: '.4rem .7rem', borderRadius: 20, border: '1px solid var(--border)', background: laneMode ? 'var(--primary)' : 'var(--bg-alt)', color: laneMode ? '#fff' : 'var(--text)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                    {laneMode ? <GridViewIcon sx={{ fontSize: 14 }} /> : <ViewWeekIcon sx={{ fontSize: 14 }} />}
+                    {laneMode ? 'Grid' : 'Lanes'}
+                </button>
             </div>
             <main style={{ flex: 1, padding: '1.5rem 1.25rem 3rem', maxWidth: 1400, margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column', gap: 24 }}>
                 {!laneMode && (

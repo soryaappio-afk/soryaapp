@@ -17,10 +17,27 @@ export default function ProjectChatClient({ projectId, initialMessages, initialC
     const [error, setError] = useState<string | null>(null);
     const [credits, setCredits] = useState<number | null>(initialCredits);
     const [wasAborted, setWasAborted] = useState(false);
+    const [externalPending, setExternalPending] = useState(false);
     const abortRef = useRef<AbortController | null>(null);
     const bottomRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+    // Detect if initial messages only contain an initial user message (auto-run scenario)
+    useEffect(() => {
+        if (messages.length === 1 && messages[0].role === 'user') {
+            setExternalPending(true);
+            // Poll for new messages every 2s until assistant appears
+            const interval = setInterval(async () => {
+                try {
+                    const res = await fetch('/api/projects/' + projectId + '/deploy'); // lightweight endpoint we have; alternatively create a messages endpoint
+                    // (Using deploy endpoint as placeholder ping)
+                } catch { }
+                // In real impl, we would fetch messages; for now rely on user reload or next interaction
+            }, 2000);
+            return () => clearInterval(interval);
+        }
+    }, []);
 
     async function send() {
         if (!prompt.trim() || loading) return;
@@ -84,6 +101,7 @@ export default function ProjectChatClient({ projectId, initialMessages, initialC
                 {credits != null && <div style={{ fontSize: 12, color: credits <= 200 ? '#b45309' : '#555' }}>{credits} credits left</div>}
             </div>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14, minHeight: 300, maxHeight: '60vh', overflowY: 'auto', paddingRight: 4 }}>
+                {externalPending && <div style={{ fontSize: 12, color: '#555', display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ width: 14, height: 14, border: '2px solid rgba(0,0,0,0.3)', borderTopColor: '#000', borderRadius: '50%', animation: 'spin .8s linear infinite' }} />Waiting for first generation...</div>}
                 {messages.map((m, i) => <Bubble key={i} role={m.role} content={m.content} />)}
                 <div ref={bottomRef} />
             </div>

@@ -7,7 +7,8 @@ import dynamic from 'next/dynamic';
 import { Prisma } from '@prisma/client';
 
 const ProjectChatClient = dynamic(() => import('@/src/components/ProjectChatClient'), { ssr: false });
-const ProjectPreviewPanel = dynamic(() => import('@/src/components/ProjectPreviewPanel'), { ssr: false });
+const ProjectAutoRunner = dynamic(() => import('@/src/components/ProjectAutoRunner'), { ssr: false });
+const LiveProjectPreview = dynamic(() => import('@/src/components/LiveProjectPreview'), { ssr: false });
 
 interface Props { params: { id: string } }
 
@@ -34,14 +35,17 @@ export default async function ProjectPage({ params }: Props) {
         }
     } catch { }
 
+    const pusherKey = process.env.NEXT_PUBLIC_PUSHER_KEY;
+    const pusherCluster = process.env.NEXT_PUBLIC_PUSHER_CLUSTER;
     return (
         <main style={{ display: 'flex', width: '100%', minHeight: '100vh', fontFamily: 'system-ui, sans-serif' }}>
             <div style={{ flex: '0 0 30%', maxWidth: '30%', minWidth: 260, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', padding: '1rem .9rem', gap: 12 }}>
                 <div style={{ fontSize: 11, marginBottom: 4 }}><Link href="/dashboard" style={{ color: 'var(--accent)', textDecoration: 'none' }}>← Dashboard</Link></div>
                 <ProjectChatClient projectId={project.id} projectName={project.name} deploymentUrl={project.deploymentUrl} initialMessages={messages.map((m: any) => ({ id: m.id, role: m.role, content: m.content }))} initialCredits={credits} />
+                <ProjectAutoRunner projectId={project.id} />
             </div>
             <div style={{ flex: '1 1 70%', maxWidth: '70%', padding: '1rem 1.25rem', overflow: 'auto' }}>
-                <ProjectPreviewPanel files={files} />
+                <LiveProjectPreview projectId={project.id} initialFiles={files} publicKey={pusherKey} cluster={pusherCluster} />
             </div>
         </main>
     );

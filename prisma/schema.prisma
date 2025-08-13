@@ -83,6 +83,8 @@ model Project {
   snapshots      ProjectSnapshot[]
   deployments    Deployment[]
   routines       Routine[]
+  todos          ProjectTodo[]
+  conversationState ProjectConversationState?
 }
 
 model ChatMessage {
@@ -154,4 +156,26 @@ model CreditLedger {
   reason    String
   meta      Json?
   createdAt DateTime @default(now())
+}
+
+model ProjectConversationState {
+  projectId             String   @id
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  summary               String?  @db.Text
+  summaryTokens         Int      @default(0)
+  totalMessages         Int      @default(0)
+  lastSummarizedMessageId String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model ProjectTodo {
+  id          String   @id @default(cuid())
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId   String
+  text        String   @db.Text
+  status      String   @default("OPEN") // OPEN | DONE
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  completedAt DateTime?
 }

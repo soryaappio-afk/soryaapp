@@ -1,5 +1,7 @@
 "use client";
 import { useState } from 'react';
+import { signIn } from 'next-auth/react';
+import OAuthButton from '@/src/app/components/OAuthButton';
 
 export default function RegisterPage() {
     const [email, setEmail] = useState('');
@@ -11,10 +13,7 @@ export default function RegisterPage() {
     async function onSubmit(e: React.FormEvent) {
         e.preventDefault();
         setError(null);
-        if (password !== confirm) {
-            setError('Passwords do not match');
-            return;
-        }
+        if (password !== confirm) { setError('Passwords do not match'); return; }
         setLoading(true);
         const res = await fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
         setLoading(false);
@@ -26,16 +25,37 @@ export default function RegisterPage() {
     }
 
     return (
-        <main style={{ display: 'flex', minHeight: '100vh', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>
-            <form onSubmit={onSubmit} style={{ width: 340, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <h1>Create your account</h1>
-                <input placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} type="email" required />
-                <input placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} type="password" required minLength={6} />
-                <input placeholder="Confirm Password" value={confirm} onChange={e => setConfirm(e.target.value)} type="password" required minLength={6} />
-                {error && <div style={{ color: 'crimson', fontSize: 12 }}>{error}</div>}
-                <button disabled={loading}>{loading ? '...' : 'Create account'}</button>
-                <p style={{ fontSize: 12 }}>Already have an account? <a href="/login">Login</a></p>
-            </form>
-        </main>
+        <div className="auth-shell">
+            <div className="auth-left">
+                <div className="auth-panel">
+                    <h1>Create account</h1>
+                    <p className="sub">Start generating full-stack apps in seconds.</p>
+                    <form onSubmit={onSubmit}>
+                        <input placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} type="email" required />
+                        <input placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} type="password" required minLength={6} />
+                        <input placeholder="Confirm Password" value={confirm} onChange={e => setConfirm(e.target.value)} type="password" required minLength={6} />
+                        {error && <div className="error">{error}</div>}
+                        <button disabled={loading}>{loading ? 'Creating…' : 'Create account'}</button>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+                            <OAuthButton provider="github" label="Continue with GitHub" onClick={() => signIn('github')} />
+                            <OAuthButton provider="google" label="Continue with Google" onClick={() => signIn('google')} />
+                        </div>
+                        <div className="alt-link">Already have an account? <a href="/login">Sign in</a></div>
+                    </form>
+                </div>
+            </div>
+            <div className="auth-right">
+                <div className="auth-gradient-bg" />
+                <div className="auth-overlay" />
+                <div className="auth-right-inner">
+                    <div className="auth-brand">Sorya</div>
+                    <div className="auth-hero-copy">
+                        <h2>From idea to repo</h2>
+                        <p>Your prompt is all you need. Generate, preview, iterate, deploy.</p>
+                    </div>
+                    <div className="auth-footer">© {new Date().getFullYear()} Sorya. All rights reserved.</div>
+                </div>
+            </div>
+        </div>
     );
 }

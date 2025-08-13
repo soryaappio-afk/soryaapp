@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { ensureVercelProject, createDeployment } from '@/src/lib/vercel';
 import { ensureInitialGrant, getCreditBalance, addCreditEntry } from '@/src/lib/credits';
 
-const ParamsSchema = z.object({ id: z.string() });
+const ParamsSchema = z.object({ projectId: z.string() });
 const DEPLOYMENT_CREDIT_COST = 20; // flat cost per deployment attempt trigger
 const MAX_FIX_ATTEMPTS = 2; // initial attempt + one fix attempt
 
@@ -16,12 +16,12 @@ function parseFirstError(log: string): string | null {
     return errLine || null;
 }
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: { projectId: string } }) {
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const parse = ParamsSchema.safeParse(params);
     if (!parse.success) return NextResponse.json({ error: 'Invalid project id' }, { status: 400 });
-    const projectId = parse.data.id;
+    const projectId = parse.data.projectId;
     const project = await prisma.project.findFirst({ where: { id: projectId, userId: session.user.id } });
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
@@ -61,7 +61,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         let depState: 'BUILDING' | 'READY' | 'ERROR' = 'READY';
         if (mockError) {
             depState = 'ERROR';
-            buildLog = 'Step 3/10: Building application...\nError: Module not found: Cannot resolve \"next/config\" in /app/src';
+            buildLog = 'Step 3/10: Building application...\nError: Module not found: Cannot resolve "next/config" in /app/src';
         } else {
             const vercelDep = await createDeployment(project.id, files);
             depState = vercelDep.state;
@@ -105,12 +105,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ routineId: routine.id, finalState, deploymentUrl, steps, balance: newBalance });
 }
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: { projectId: string } }) {
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const parse = ParamsSchema.safeParse(params);
     if (!parse.success) return NextResponse.json({ error: 'Invalid project id' }, { status: 400 });
-    const projectId = parse.data.id;
+    const projectId = parse.data.projectId;
     const project = await prisma.project.findFirst({ where: { id: projectId, userId: session.user.id } });
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     const latest = await prisma.deployment.findFirst({ where: { projectId }, orderBy: { createdAt: 'desc' } });

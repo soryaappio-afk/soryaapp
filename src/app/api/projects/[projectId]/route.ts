@@ -4,10 +4,11 @@ import { authOptions } from '@/src/lib/auth';
 import { prisma } from '@/src/lib/db';
 import { ensureRepo, pushSnapshot } from '@/src/lib/github';
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+// Publish (or republish) project snapshot to GitHub
+export async function PATCH(req: NextRequest, { params }: { params: { projectId: string } }) {
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const projectId = params.id;
+    const projectId = params.projectId;
     const project = await prisma.project.findFirst({ where: { id: projectId, userId: session.user.id } });
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     const user = await prisma.user.findUnique({ where: { id: session.user.id } });

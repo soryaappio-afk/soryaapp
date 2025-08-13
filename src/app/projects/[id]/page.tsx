@@ -6,9 +6,10 @@ import { redirect } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { Prisma } from '@prisma/client';
 
-interface Props { params: { id: string } }
-
 const ProjectChatClient = dynamic(() => import('@/src/components/ProjectChatClient'), { ssr: false });
+const ProjectPreviewPanel = dynamic(() => import('@/src/components/ProjectPreviewPanel'), { ssr: false });
+
+interface Props { params: { id: string } }
 
 export default async function ProjectPage({ params }: Props) {
     const session = await getServerSession(authOptions as any) as any;
@@ -17,6 +18,12 @@ export default async function ProjectPage({ params }: Props) {
     const project = await prisma.project.findFirst({ where: { id: params.id, userId } });
     if (!project) return <div style={{ padding: '2rem' }}>Not found</div>;
     const messages = await prisma.chatMessage.findMany({ where: { projectId: params.id }, orderBy: { createdAt: 'asc' } });
+    // Get latest snapshot files
+    let files: { path: string; content: string }[] = [];
+    if (project.lastSnapshotId) {
+        const snap = await prisma.projectSnapshot.findUnique({ where: { id: project.lastSnapshotId } });
+        if (snap) files = (snap.files as any[]) as { path: string; content: string }[];
+    }
     // Fetch credits balance
     let credits: number | null = null;
     try {
@@ -28,11 +35,14 @@ export default async function ProjectPage({ params }: Props) {
     } catch { }
 
     return (
-        <main style={{ padding: '1.5rem 1.25rem 3rem', fontFamily: 'system-ui, sans-serif', maxWidth: 1000, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Link href="/dashboard" style={{ fontSize: 12, color: 'var(--accent)' }}>← Back to Dashboard</Link>
+        <main style={{ display: 'flex', width: '100%', minHeight: '100vh', fontFamily: 'system-ui, sans-serif' }}>
+            <div style={{ flex: '0 0 30%', maxWidth: '30%', minWidth: 260, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', padding: '1rem .9rem', gap: 12 }}>
+                <div style={{ fontSize: 11, marginBottom: 4 }}><Link href="/dashboard" style={{ color: 'var(--accent)', textDecoration: 'none' }}>← Dashboard</Link></div>
+                <ProjectChatClient projectId={project.id} projectName={project.name} deploymentUrl={project.deploymentUrl} initialMessages={messages.map((m: any) => ({ id: m.id, role: m.role, content: m.content }))} initialCredits={credits} />
             </div>
-            <ProjectChatClient projectId={project.id} projectName={project.name} deploymentUrl={project.deploymentUrl} initialMessages={messages.map((m: any) => ({ id: m.id, role: m.role, content: m.content }))} initialCredits={credits} />
+            <div style={{ flex: '1 1 70%', maxWidth: '70%', padding: '1rem 1.25rem', overflow: 'auto' }}>
+                <ProjectPreviewPanel files={files} />
+            </div>
         </main>
     );
 }

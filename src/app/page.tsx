@@ -7,8 +7,8 @@ import nextDynamic from 'next/dynamic';
 
 const ProjectEditor = nextDynamic(() => import('@/src/components/ProjectEditor'), { ssr: false });
 import { getCreditBalance, ensureInitialGrant } from '@/src/lib/credits';
-
-export const dynamicMode = 'force-dynamic';
+// Ensure this page is always dynamic (no static optimization)
+export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
     const session: any = await getServerSession(authOptions as any);

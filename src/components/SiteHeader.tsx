@@ -35,8 +35,9 @@ export default function SiteHeader({ session, credits }: Props) {
     const menuRef = useRef<HTMLDivElement | null>(null);
     const balance = credits;
     const low = typeof balance === 'number' && balance <= LOW_CREDIT_THRESHOLD;
-    const used = typeof balance === 'number' ? 1000 - balance : null; // assumes initial grant 1000
-    const pct = typeof balance === 'number' ? Math.max(0, Math.min(100, (balance / 1000) * 100)) : 0;
+    const INITIAL_GRANT = typeof window !== 'undefined' ? (parseInt(process.env.NEXT_PUBLIC_CREDIT_INITIAL_GRANT || '1000', 10)) : 1000;
+    const used = typeof balance === 'number' ? INITIAL_GRANT - balance : null;
+    const pct = typeof balance === 'number' ? Math.max(0, Math.min(100, (balance / INITIAL_GRANT) * 100)) : 0;
     const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(typeof window !== 'undefined' && (window.localStorage.getItem('theme') as any) || 'system');
     const [appearanceOpen, setAppearanceOpen] = useState(false);
 
@@ -112,7 +113,7 @@ export default function SiteHeader({ session, credits }: Props) {
                                             </div>
                                             <div style={{ fontSize: 10, color: 'var(--text-dim)', display: 'flex', justifyContent: 'space-between' }}>
                                                 <span>Used {used}</span>
-                                                <span>{credits}/1000</span>
+                                                <span>{credits}/{INITIAL_GRANT}</span>
                                             </div>
                                         </div>
                                     )}

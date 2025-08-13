@@ -1,5 +1,7 @@
 import { prisma } from '@/src/lib/db';
 
+const INITIAL_GRANT = parseInt(process.env.CREDIT_INITIAL_GRANT || '1000', 10);
+
 export async function getCreditBalance(userId: string) {
     // If no ledger entries yet fall back to legacy field; otherwise sum deltas (even if zero)
     const entryCount = await prisma.creditLedger.count({ where: { userId } });
@@ -22,6 +24,6 @@ export async function ensureInitialGrant(userId: string) {
     if (!user) return; // Let caller handle missing user (likely treat as unauthorized)
     const existing = await prisma.creditLedger.findFirst({ where: { userId } });
     if (!existing) {
-        await addCreditEntry(userId, 1000, 'initial_grant');
+        await addCreditEntry(userId, INITIAL_GRANT, 'initial_grant');
     }
 }

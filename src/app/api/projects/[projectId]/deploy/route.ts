@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/db';
+import { prisma, prismaAvailable } from '@/src/lib/db';
 import { z } from 'zod';
 import { ensureVercelProject, createDeployment } from '@/src/lib/vercel';
 import { ensureInitialGrant, getCreditBalance, addCreditEntry } from '@/src/lib/credits';
@@ -21,6 +21,9 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: NextRequest, { params }: { params: { projectId: string } }) {
     if ((authOptions as any).adapter === undefined) {
         return NextResponse.json({ bypassed: true, message: 'Auth disabled; deployment endpoint inactive' }, { status: 200 });
+    }
+    if (!prisma || !prismaAvailable) {
+        return NextResponse.json({ bypassed: true, message: 'Database unavailable; deployment inactive' }, { status: 200 });
     }
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -113,6 +116,9 @@ export async function POST(req: NextRequest, { params }: { params: { projectId: 
 export async function GET(req: NextRequest, { params }: { params: { projectId: string } }) {
     if ((authOptions as any).adapter === undefined) {
         return NextResponse.json({ bypassed: true, deployment: null }, { status: 200 });
+    }
+    if (!prisma || !prismaAvailable) {
+        return NextResponse.json({ bypassed: true, deployment: null, db: false }, { status: 200 });
     }
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

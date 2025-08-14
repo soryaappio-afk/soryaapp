@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/src/lib/db';
+import { prisma, prismaAvailable } from '@/src/lib/db';
 import { authOptions } from '@/src/lib/auth';
 
 export const dynamic = 'force-dynamic';
@@ -7,6 +7,9 @@ export const dynamic = 'force-dynamic';
 export async function GET(_: Request, { params }: { params: { projectId: string; snapshotId: string } }) {
     try {
         if ((authOptions as any).adapter === undefined) {
+            return NextResponse.json({ bypassed: true, files: [] }, { status: 200 });
+        }
+        if (!prisma || !prismaAvailable) {
             return NextResponse.json({ bypassed: true, files: [] }, { status: 200 });
         }
         const snap = await prisma.projectSnapshot.findFirst({

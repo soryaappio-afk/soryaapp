@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/db';
+import { prisma, prismaAvailable } from '@/src/lib/db';
 import { ensureRepo, pushSnapshot } from '@/src/lib/github';
 
 export const dynamic = 'force-dynamic';
@@ -10,6 +10,9 @@ export const dynamic = 'force-dynamic';
 export async function PATCH(req: NextRequest, { params }: { params: { projectId: string } }) {
     if ((authOptions as any).adapter === undefined) {
         return NextResponse.json({ bypassed: true, message: 'Auth disabled; publish endpoint inactive' }, { status: 200 });
+    }
+    if (!prisma || !prismaAvailable) {
+        return NextResponse.json({ bypassed: true, message: 'Database unavailable; publish endpoint inactive' }, { status: 200 });
     }
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

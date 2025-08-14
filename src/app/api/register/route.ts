@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/src/lib/db';
+import { prisma, prismaAvailable } from '@/src/lib/db';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { authOptions } from '@/src/lib/auth';
@@ -12,6 +12,9 @@ export async function POST(req: NextRequest) {
     try {
         if ((authOptions as any).adapter === undefined) {
             return NextResponse.json({ bypassed: true }, { status: 200 });
+        }
+        if (!prisma || !prismaAvailable) {
+            return NextResponse.json({ bypassed: true, error: 'Database unavailable' }, { status: 200 });
         }
         const json = await req.json().catch(() => null);
         const parse = BodySchema.safeParse(json);

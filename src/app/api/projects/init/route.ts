@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/db';
+import { prisma, prismaAvailable } from '@/src/lib/db';
 import { z } from 'zod';
 
 // Ensure this route is always dynamic so it never attempts prerendering during build.
@@ -40,6 +40,9 @@ export async function POST(req: NextRequest) {
         // If auth adapter is bypassed (early deploy without DB/auth), short‑circuit.
         if ((authOptions as any).adapter === undefined) {
             return NextResponse.json({ bypassed: true }, { status: 200 });
+        }
+        if (!prisma || !prismaAvailable) {
+            return NextResponse.json({ bypassed: true, db: false }, { status: 200 });
         }
         const session: any = await getServerSession(authOptions as any);
         if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

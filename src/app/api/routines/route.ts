@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/db';
+import { prisma, prismaAvailable } from '@/src/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +9,9 @@ export async function GET(req: NextRequest) {
     try {
         if ((authOptions as any).adapter === undefined) {
             return NextResponse.json({ routines: [], bypassed: true }, { status: 200 });
+        }
+        if (!prisma || !prismaAvailable) {
+            return NextResponse.json({ routines: [], bypassed: true, db: false }, { status: 200 });
         }
         const session: any = await getServerSession(authOptions as any);
         if (!session?.user) return NextResponse.json({ routines: [] }, { status: 401 });

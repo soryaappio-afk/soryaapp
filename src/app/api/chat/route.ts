@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/src/lib/db';
+import { prisma, prismaAvailable } from '@/src/lib/db';
 import { z } from 'zod';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/src/lib/auth';
@@ -31,17 +31,28 @@ async function generateAssistantReply(prompt: string, opts: { diffSummary?: any;
         return `Generated (fallback – no API key) for: ${prompt}`;
     }
     let snapshotSummary = '';
-    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { lastSnapshotId: true, name: true } });
-    if (project?.lastSnapshotId) {
-        const snap = await prisma.projectSnapshot.findUnique({ where: { id: project.lastSnapshotId } });
-        if (snap) {
-            const files: any[] = snap.files as any[];
-            const list = files.map(f => f.path).slice(0, 15).join(', ');
-            snapshotSummary = `Project: ${project.name}. Files: ${files.length}. Sample: ${list}${files.length > 15 ? ' ...' : ''}`;
-        }
+    let extraContext = '';
+    let recentMessages: any[] = [];
+    let openTodos = '';
+    if (prismaAvailable && prisma) {
+        try {
+            const project = await prisma.project.findUnique({ where: { id: projectId }, select: { lastSnapshotId: true, name: true } });
+            if (project?.lastSnapshotId) {
+                try {
+                    const snap = await prisma.projectSnapshot.findUnique({ where: { id: project.lastSnapshotId } });
+                    if (snap) {
+                        const files: any[] = snap.files as any[];
+                        const list = files.map(f => f.path).slice(0, 15).join(', ');
+                        snapshotSummary = `Project: ${project.name}. Files: ${files.length}. Sample: ${list}${files.length > 15 ? ' ...' : ''}`;
+                    }
+                } catch { }
+            }
+            const ctx = await buildContext(projectId, snapshotSummary, diffSummary).catch(() => ({ extraContext: '', recentMessages: [] } as any));
+            extraContext = ctx.extraContext || '';
+            recentMessages = ctx.recentMessages || [];
+            openTodos = await fetchProjectTodos(projectId);
+        } catch { /* ignore DB issues */ }
     }
-    const { extraContext, recentMessages } = await buildContext(projectId, snapshotSummary, diffSummary);
-    const openTodos = await fetchProjectTodos(projectId);
     const systemCore = [
         'You are Sorya, a highly diligent senior full-stack engineer AI that incrementally designs, refactors and extends the project.',
         'Style: decisive, no laziness, give concrete implementation guidance, list next actionable steps.',
@@ -204,6 +215,9 @@ export async function POST(req: NextRequest) {
     if ((authOptions as any).adapter === undefined) {
         // Return minimal placeholder so UI can still function in bypass mode
         return NextResponse.json({ bypassed: true, message: 'Auth bypass active' }, { status: 200 });
+    }
+    if (!prismaAvailable || !prisma) {
+        return NextResponse.json({ error: 'Database unavailable' }, { status: 503 });
     }
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) {
@@ -485,12 +499,80 @@ export async function POST(req: NextRequest) {
 
 // Conversation memory helpers (moved above generateAssistantReply)
 function estimateTokens(text: string) { return Math.ceil(text.length / 4); }
-async function getConversationState(projectId: string) { let state = await (prisma as any).projectConversationState.findUnique({ where: { projectId } }); if (!state) state = await (prisma as any).projectConversationState.create({ data: { projectId } }); return state; }
-async function updateConversationState(projectId: string, patch: any) { return (prisma as any).projectConversationState.update({ where: { projectId }, data: patch }); }
-async function buildContext(projectId: string, snapshotSummary: string, diffSummary: any) { const state = await getConversationState(projectId); const afterId = state.lastSummarizedMessageId; const where: any = { projectId }; if (afterId) { const pivot = await prisma.chatMessage.findUnique({ where: { id: afterId } }); if (pivot) where.createdAt = { gt: pivot.createdAt }; } const recentAll = await prisma.chatMessage.findMany({ where, orderBy: { createdAt: 'asc' } }); const MAX_RECENT_TOKENS = 1600; const trimmed: any[] = []; let acc = 0; for (let i = recentAll.length - 1; i >= 0; i--) { const m = recentAll[i]; const slice = m.content.slice(0, 4000); const t = estimateTokens(slice); if (acc + t > MAX_RECENT_TOKENS) break; trimmed.push({ role: m.role, content: slice }); acc += t; } trimmed.reverse(); const summaryBlock = state.summary ? `Conversation summary (compressed):\n${state.summary}` : ''; let diffBlock = ''; if (diffSummary) { const { added = [], modified = [], removed = [], unchangedCount } = diffSummary; diffBlock = `Last diff: Added(${added.length}) Modified(${modified.length}) Removed(${removed.length}) Unchanged(${unchangedCount}).`; } const contextParts: string[] = []; if (snapshotSummary) contextParts.push(snapshotSummary); if (diffBlock) contextParts.push(diffBlock); if (summaryBlock) contextParts.push(summaryBlock); return { state, recentMessages: trimmed, extraContext: contextParts.join('\n') }; }
-async function maybeSummarize(projectId: string) { const state = await getConversationState(projectId); const total = await prisma.chatMessage.count({ where: { projectId } }); if (total < 12) return; let pivotDate: Date | null = null; if (state.lastSummarizedMessageId) { const pivot = await prisma.chatMessage.findUnique({ where: { id: state.lastSummarizedMessageId } }); pivotDate = pivot?.createdAt || null; } const toCompress = await prisma.chatMessage.findMany({ where: { projectId, ...(pivotDate ? { createdAt: { gt: pivotDate } } : {}) }, orderBy: { createdAt: 'asc' } }); if (toCompress.length < 14) return; const keepRecent = 10; const head = toCompress.slice(0, Math.max(0, toCompress.length - keepRecent)); if (!head.length) return; const lastHead = head[head.length - 1]; const summarizerModel = process.env.SUMMARIZER_MODEL || 'gpt-4o-mini'; const summaryInput: any = [{ role: 'system', content: 'Summarize the project conversation so far into: Goals; Architecture decisions; Implemented features; Pending TODOs; Rejected/Deferred ideas. <=350 tokens.' }, { role: 'user', content: head.map(m => `${m.role.toUpperCase()}: ${m.content.slice(0, 1500)}`).join('\n---\n') }]; try { const summaryResp = await openai.chat.completions.create({ model: summarizerModel, messages: summaryInput as any, temperature: 0.2, max_tokens: 380 }); const summaryText = (summaryResp as any).choices[0]?.message?.content?.trim(); if (summaryText) { const merged = state.summary ? `${state.summary}\n\n[Update]\n${summaryText}` : summaryText; await updateConversationState(projectId, { summary: merged.slice(0, 12000), summaryTokens: estimateTokens(merged), lastSummarizedMessageId: lastHead.id, totalMessages: total }); } } catch (e: any) { console.warn('[AI] summarization failed', e?.message); } }
+async function getConversationState(projectId: string) {
+    if (!prismaAvailable || !prisma) return { projectId, summary: '', lastSummarizedMessageId: null } as any;
+    let state = await (prisma as any).projectConversationState.findUnique({ where: { projectId } });
+    if (!state) state = await (prisma as any).projectConversationState.create({ data: { projectId } });
+    return state;
+}
+async function updateConversationState(projectId: string, patch: any) {
+    if (!prismaAvailable || !prisma) return null;
+    return (prisma as any).projectConversationState.update({ where: { projectId }, data: patch });
+}
+async function buildContext(projectId: string, snapshotSummary: string, diffSummary: any) {
+    if (!prismaAvailable || !prisma) return { state: null, recentMessages: [], extraContext: snapshotSummary || '' };
+    const state = await getConversationState(projectId);
+    const afterId = (state as any).lastSummarizedMessageId;
+    const where: any = { projectId };
+    if (afterId) {
+        const pivot = await prisma.chatMessage.findUnique({ where: { id: afterId } });
+        if (pivot) where.createdAt = { gt: pivot.createdAt };
+    }
+    const recentAll = await prisma.chatMessage.findMany({ where, orderBy: { createdAt: 'asc' } });
+    const MAX_RECENT_TOKENS = 1600;
+    const trimmed: any[] = [];
+    let acc = 0;
+    for (let i = recentAll.length - 1; i >= 0; i--) {
+        const m = recentAll[i];
+        const slice = m.content.slice(0, 4000);
+        const t = estimateTokens(slice);
+        if (acc + t > MAX_RECENT_TOKENS) break;
+        trimmed.push({ role: m.role, content: slice });
+        acc += t;
+    }
+    trimmed.reverse();
+    const summaryBlock = (state as any).summary ? `Conversation summary (compressed):\n${(state as any).summary}` : '';
+    let diffBlock = '';
+    if (diffSummary) {
+        const { added = [], modified = [], removed = [], unchangedCount } = diffSummary;
+        diffBlock = `Last diff: Added(${added.length}) Modified(${modified.length}) Removed(${removed.length}) Unchanged(${unchangedCount}).`;
+    }
+    const contextParts: string[] = [];
+    if (snapshotSummary) contextParts.push(snapshotSummary);
+    if (diffBlock) contextParts.push(diffBlock);
+    if (summaryBlock) contextParts.push(summaryBlock);
+    return { state, recentMessages: trimmed, extraContext: contextParts.join('\n') };
+}
+async function maybeSummarize(projectId: string) {
+    if (!prismaAvailable || !prisma) return;
+    const state = await getConversationState(projectId);
+    const total = await prisma.chatMessage.count({ where: { projectId } });
+    if (total < 12) return;
+    let pivotDate: Date | null = null;
+    if ((state as any).lastSummarizedMessageId) {
+        const pivot = await prisma.chatMessage.findUnique({ where: { id: (state as any).lastSummarizedMessageId } });
+        pivotDate = pivot?.createdAt || null;
+    }
+    const toCompress = await prisma.chatMessage.findMany({ where: { projectId, ...(pivotDate ? { createdAt: { gt: pivotDate } } : {}) }, orderBy: { createdAt: 'asc' } });
+    if (toCompress.length < 14) return;
+    const keepRecent = 10;
+    const head = toCompress.slice(0, Math.max(0, toCompress.length - keepRecent));
+    if (!head.length) return;
+    const lastHead = head[head.length - 1];
+    const summarizerModel = process.env.SUMMARIZER_MODEL || 'gpt-4o-mini';
+    const summaryInput: any = [{ role: 'system', content: 'Summarize the project conversation so far into: Goals; Architecture decisions; Implemented features; Pending TODOs; Rejected/Deferred ideas. <=350 tokens.' }, { role: 'user', content: head.map(m => `${m.role.toUpperCase()}: ${m.content.slice(0, 1500)}`).join('\n---\n') }];
+    try {
+        const summaryResp = await openai.chat.completions.create({ model: summarizerModel, messages: summaryInput as any, temperature: 0.2, max_tokens: 380 });
+        const summaryText = (summaryResp as any).choices[0]?.message?.content?.trim();
+        if (summaryText) {
+            const merged = (state as any).summary ? `${(state as any).summary}\n\n[Update]\n${summaryText}` : summaryText;
+            await updateConversationState(projectId, { summary: merged.slice(0, 12000), summaryTokens: estimateTokens(merged), lastSummarizedMessageId: lastHead.id, totalMessages: total });
+        }
+    } catch (e: any) { console.warn('[AI] summarization failed', e?.message); }
+}
 // New helper to fetch open project TODOs for prompt context
 async function fetchProjectTodos(projectId: string) {
+    if (!prismaAvailable || !prisma) return '';
     try {
         const todos = await (prisma as any).projectTodo.findMany({ where: { projectId, status: 'OPEN' }, orderBy: { createdAt: 'asc' }, take: 12 });
         if (!todos.length) return '';

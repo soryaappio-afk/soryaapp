@@ -3,7 +3,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import GitHubProvider from 'next-auth/providers/github';
 import GoogleProvider from 'next-auth/providers/google';
 import type { NextAuthOptions } from 'next-auth';
-import { prisma } from '@/src/lib/db';
+import { prisma, prismaAvailable } from '@/src/lib/db';
 // NEXTAUTH_URL fallback (if unset and running on Vercel) so devs don't have to define it until custom domain ready.
 if (process.env.VERCEL_URL && !process.env.NEXTAUTH_URL) {
     process.env.NEXTAUTH_URL = `https://${process.env.VERCEL_URL}`;
@@ -22,9 +22,12 @@ if (AUTH_BYPASS && !(global as any).__AUTH_BYPASS_LOGGED) {
 }
 import bcrypt from 'bcryptjs';
 
+// Build adapter only when not bypassing AND prisma client is available (DATABASE_URL present)
+const adapter = (!AUTH_BYPASS && prismaAvailable && prisma) ? PrismaAdapter(prisma) : undefined;
+
 export const authOptions: NextAuthOptions = {
-    // Adapter only if auth not bypassed
-    ...(AUTH_BYPASS ? {} : { adapter: PrismaAdapter(prisma) as any }),
+    // Adapter only if auth not bypassed & DB available
+    ...(adapter ? { adapter: adapter as any } : {}),
     session: { strategy: 'jwt' },
     providers: [
         CredentialsProvider({
@@ -34,6 +37,7 @@ export const authOptions: NextAuthOptions = {
                 password: { label: 'Password', type: 'password' }
             },
             async authorize(credentials) {
+                if (!prismaAvailable || !prisma) return null; // DB not available in bypass/early deploy
                 if (!credentials?.email || !credentials.password) return null;
                 const user = await prisma.user.findUnique({ where: { email: credentials.email } });
                 if (!user) return null;

@@ -30,8 +30,8 @@ export default function LoginPage() {
                         <input placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} type="password" required />
                         <button disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
-                            <OAuthButton provider="github" label="Continue with GitHub" onClick={() => signIn('github')} />
-                            <OAuthButton provider="google" label="Continue with Google" onClick={() => signIn('google')} />
+                            <OAuthButton provider="github" label="Continue with GitHub" onClick={() => signIn('github', { callbackUrl: '/dashboard' })} />
+                            <OAuthButton provider="google" label="Continue with Google" onClick={() => signIn('google', { callbackUrl: '/dashboard' })} />
                         </div>
                         <div className="alt-link">No account? <a href="/register">Create one</a></div>
                     </form>

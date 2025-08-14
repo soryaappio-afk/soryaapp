@@ -17,8 +17,12 @@ export default function RegisterPage() {
         setLoading(true);
         const res = await fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
         setLoading(false);
-        if (res.ok) window.location.href = '/login';
-        else {
+        if (res.ok) {
+            // Auto-login immediately after registration
+            const loginRes = await signIn('credentials', { email, password, redirect: false });
+            if (loginRes?.ok) window.location.href = '/dashboard';
+            else window.location.href = '/login';
+        } else {
             const data = await res.json().catch(() => ({}));
             setError(data.error || 'Failed');
         }
@@ -37,8 +41,8 @@ export default function RegisterPage() {
                         {error && <div className="error">{error}</div>}
                         <button disabled={loading}>{loading ? 'Creating…' : 'Create account'}</button>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
-                            <OAuthButton provider="github" label="Continue with GitHub" onClick={() => signIn('github')} />
-                            <OAuthButton provider="google" label="Continue with Google" onClick={() => signIn('google')} />
+                            <OAuthButton provider="github" label="Continue with GitHub" onClick={() => signIn('github', { callbackUrl: '/dashboard' })} />
+                            <OAuthButton provider="google" label="Continue with Google" onClick={() => signIn('google', { callbackUrl: '/dashboard' })} />
                         </div>
                         <div className="alt-link">Already have an account? <a href="/login">Sign in</a></div>
                     </form>

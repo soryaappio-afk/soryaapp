@@ -16,7 +16,8 @@ model User {
   emailVerified       DateTime?
   name                String?
   image               String?
-  passwordHash        String
+  // Made optional so OAuth (GitHub/Google) accounts without local credentials can be created.
+  passwordHash        String?
   credits             Int               @default(1000)
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt

@@ -41,6 +41,8 @@ export const authOptions: NextAuthOptions = {
                 if (!credentials?.email || !credentials.password) return null;
                 const user = await prisma.user.findUnique({ where: { email: credentials.email } });
                 if (!user) return null;
+                // User created through OAuth may not have a passwordHash
+                if (!user.passwordHash) return null;
                 const valid = await bcrypt.compare(credentials.password, user.passwordHash);
                 if (!valid) return null;
                 return { id: user.id, email: user.email, name: user.name } as any;

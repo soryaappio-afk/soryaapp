@@ -9,6 +9,8 @@ import { addCreditEntry, getCreditBalance, ensureInitialGrant } from '@/src/lib/
 import OpenAI from 'openai';
 
 
+export const dynamic = 'force-dynamic';
+
 // Initialize OpenAI client once
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
@@ -199,6 +201,10 @@ async function classifyPrompt(prompt: string): Promise<ClassificationResult> {
 const GENERATION_CREDIT_COST = 50;
 
 export async function POST(req: NextRequest) {
+    if ((authOptions as any).adapter === undefined) {
+        // Return minimal placeholder so UI can still function in bypass mode
+        return NextResponse.json({ bypassed: true, message: 'Auth bypass active' }, { status: 200 });
+    }
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

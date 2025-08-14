@@ -4,15 +4,27 @@ import GitHubProvider from 'next-auth/providers/github';
 import GoogleProvider from 'next-auth/providers/google';
 import type { NextAuthOptions } from 'next-auth';
 import { prisma } from '@/src/lib/db';
-// Ensure NEXTAUTH_URL is set in Vercel preview / production even if a custom domain isn't yet attached.
-// Vercel automatically provides VERCEL_URL (e.g. my-app-abc123.vercel.app). We synthesize https URL if absent.
+// NEXTAUTH_URL fallback (if unset and running on Vercel) so devs don't have to define it until custom domain ready.
 if (process.env.VERCEL_URL && !process.env.NEXTAUTH_URL) {
     process.env.NEXTAUTH_URL = `https://${process.env.VERCEL_URL}`;
+}
+
+// Allow bypass via env for early deployments without DB / auth configured.
+const bypassReasons: string[] = [];
+if (process.env.AUTH_BYPASS === '1') bypassReasons.push('AUTH_BYPASS=1');
+if (!process.env.NEXTAUTH_URL) bypassReasons.push('NEXTAUTH_URL missing');
+if (!process.env.DATABASE_URL) bypassReasons.push('DATABASE_URL missing');
+const AUTH_BYPASS = bypassReasons.length > 0;
+// Log once (build/runtime) when bypass active
+if (AUTH_BYPASS && !(global as any).__AUTH_BYPASS_LOGGED) {
+    console.warn('[auth] Bypassing NextAuth adapter:', bypassReasons.join(', '));
+    (global as any).__AUTH_BYPASS_LOGGED = true;
 }
 import bcrypt from 'bcryptjs';
 
 export const authOptions: NextAuthOptions = {
-    adapter: PrismaAdapter(prisma) as any,
+    // Adapter only if auth not bypassed
+    ...(AUTH_BYPASS ? {} : { adapter: PrismaAdapter(prisma) as any }),
     session: { strategy: 'jwt' },
     providers: [
         CredentialsProvider({

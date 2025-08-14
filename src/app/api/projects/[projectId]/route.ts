@@ -4,8 +4,13 @@ import { authOptions } from '@/src/lib/auth';
 import { prisma } from '@/src/lib/db';
 import { ensureRepo, pushSnapshot } from '@/src/lib/github';
 
+export const dynamic = 'force-dynamic';
+
 // Publish (or republish) project snapshot to GitHub
 export async function PATCH(req: NextRequest, { params }: { params: { projectId: string } }) {
+    if ((authOptions as any).adapter === undefined) {
+        return NextResponse.json({ bypassed: true, message: 'Auth disabled; publish endpoint inactive' }, { status: 200 });
+    }
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const projectId = params.projectId;

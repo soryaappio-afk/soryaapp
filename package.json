@@ -4,7 +4,8 @@
     "version": "0.1.0",
     "scripts": {
         "dev": "next dev",
-        "build": "npm run prisma:deploy && next build",
+        "build": "node scripts/prebuild.cjs && next build",
+        "build:full": "npm run prisma:deploy && next build",
         "start": "next start",
         "prisma:migrate": "prisma migrate dev",
         "prisma:generate": "prisma generate",

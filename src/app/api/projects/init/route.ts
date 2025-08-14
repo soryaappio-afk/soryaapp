@@ -4,6 +4,9 @@ import { authOptions } from '@/src/lib/auth';
 import { prisma } from '@/src/lib/db';
 import { z } from 'zod';
 
+// Ensure this route is always dynamic so it never attempts prerendering during build.
+export const dynamic = 'force-dynamic';
+
 const BodySchema = z.object({ prompt: z.string().min(3) });
 
 function deriveAppName(prompt: string) {
@@ -33,18 +36,26 @@ async function classifyPrompt(prompt: string) {
 }
 
 export async function POST(req: NextRequest) {
-    const session: any = await getServerSession(authOptions as any);
-    if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const userId = session.user.id;
-    const json = await req.json().catch(() => null);
-    const parsed = BodySchema.safeParse(json);
-    if (!parsed.success) return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
-    const { prompt } = parsed.data;
-    // Create project quickly (no credits deducted yet)
-    const { type, confidence } = await classifyPrompt(prompt);
-    const appName = deriveAppName(prompt);
-    const project = await prisma.project.create({ data: { userId, name: appName, type, typeConfidence: confidence } });
-    // Store initial user message so project page can kick off generation
-    await prisma.chatMessage.create({ data: { userId, projectId: project.id, role: 'user', content: prompt } });
-    return NextResponse.json({ projectId: project.id, projectName: project.name, projectType: project.type, typeConfidence: project.typeConfidence });
+    try {
+        // If auth adapter is bypassed (early deploy without DB/auth), short‑circuit.
+        if ((authOptions as any).adapter === undefined) {
+            return NextResponse.json({ bypassed: true }, { status: 200 });
+        }
+        const session: any = await getServerSession(authOptions as any);
+        if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        const userId = session.user.id;
+        const json = await req.json().catch(() => null);
+        const parsed = BodySchema.safeParse(json);
+        if (!parsed.success) return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
+        const { prompt } = parsed.data;
+        // Create project quickly (no credits deducted yet)
+        const { type, confidence } = await classifyPrompt(prompt);
+        const appName = deriveAppName(prompt);
+        const project = await prisma.project.create({ data: { userId, name: appName, type, typeConfidence: confidence } });
+        // Store initial user message so project page can kick off generation
+        await prisma.chatMessage.create({ data: { userId, projectId: project.id, role: 'user', content: prompt } });
+        return NextResponse.json({ projectId: project.id, projectName: project.name, projectType: project.type, typeConfidence: project.typeConfidence });
+    } catch (e: any) {
+        return NextResponse.json({ error: 'unavailable', message: e?.message }, { status: 200 });
+    }
 }

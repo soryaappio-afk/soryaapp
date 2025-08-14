@@ -47,6 +47,18 @@ body {
     transition: background .25s, color .25s;
 }
 
+/* Brand logo styling: black background in light mode for visibility, transparent in dark mode */
+img.brand-logo {
+    background: #000;
+    border-radius: 10px;
+    padding: 4px 6px;
+    display: inline-block;
+}
+[data-theme='dark'] img.brand-logo {
+    background: transparent;
+    padding: 0;
+}
+
 /* Auth split layout */
 .auth-shell {
     display: flex;

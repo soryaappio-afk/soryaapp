@@ -73,7 +73,9 @@ export default function SiteHeader({ session, credits }: Props) {
         <>
             <header style={{ display: 'flex', justifyContent: 'space-between', padding: '0.85rem 1.5rem', borderBottom: '1px solid var(--border)', background: 'var(--bg-alt)', position: 'sticky', top: 0, zIndex: 50, gap: 24 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 18, minWidth: 0 }}>
-                    <a href="/" style={{ color: 'var(--text)', textDecoration: 'none', fontWeight: 600, fontSize: 15 }}>Sorya</a>
+                    <a href="/" style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
+                        <img src="/sorya-logo.png" alt="Sorya" className="brand-logo" style={{ height: 30, width: 'auto', display: 'block' }} />
+                    </a>
                     {showBack && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                             <a href="/" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, textDecoration: 'none', color: 'var(--text-dim)', padding: '.3rem .55rem', border: '1px solid var(--border)', borderRadius: 20 }}>

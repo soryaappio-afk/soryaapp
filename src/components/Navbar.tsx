@@ -22,7 +22,9 @@ export default function Navbar({ credits, session, minimal }: Props) {
             top: 0,
             zIndex: 40
         }}>
-            <Link href="/" style={{ fontWeight: 600, fontSize: 16, letterSpacing: '.5px' }}>Sorya</Link>
+            <Link href="/" style={{ display: 'flex', alignItems: 'center', textDecoration: 'none', lineHeight: 0 }}>
+                <img src="/sorya-logo.png" alt="Sorya" className="brand-logo" style={{ height: 32, width: 'auto', display: 'block' }} />
+            </Link>
             {!minimal && (
                 <div style={{ display: 'flex', gap: 14, fontSize: 13 }}>
                     <Link href="/dashboard">Dashboard</Link>

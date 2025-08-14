@@ -57,7 +57,7 @@ export default function RegisterPage() {
                 <div className="auth-gradient-bg" />
                 <div className="auth-overlay" />
                 <div className="auth-right-inner">
-                    <div className="auth-brand">Sorya</div>
+                    <div className="auth-brand" style={{ lineHeight: 0 }}><img src="/sorya-logo.png" alt="Sorya" className="brand-logo" style={{ height: 48, width: 'auto', display: 'block' }} /></div>
                     <div className="auth-hero-copy">
                         <h2>From idea to repo</h2>
                         <p>Your prompt is all you need. Generate, preview, iterate, deploy.</p>

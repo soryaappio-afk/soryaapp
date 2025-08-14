@@ -1,12 +1,23 @@
 "use client";
 import { signIn } from 'next-auth/react';
 import OAuthButton from '@/src/app/components/OAuthButton';
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/src/app/components/Toast';
 
 export default function LoginPage() {
     const { push } = useToast();
+    const search = useSearchParams();
+    useEffect(() => {
+        const err = search?.get('error');
+        if (err === 'OAuthCreateAccount') {
+            push({ kind: 'warning', message: 'GitHub sign-in failed: email already exists. Use your email & password instead.' });
+        } else if (err === 'OAuthAccountNotLinked') {
+            push({ kind: 'warning', message: 'Email already linked to another sign-in method. Use original method.' });
+        } else if (err === 'GitHubEmailMissing') {
+            push({ kind: 'error', message: 'GitHub account has no public email. Add a verified email to GitHub or register with email/password.' });
+        }
+    }, [search, push]);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
@@ -45,7 +56,7 @@ export default function LoginPage() {
                 <div className="auth-gradient-bg" />
                 <div className="auth-overlay" />
                 <div className="auth-right-inner">
-                    <div className="auth-brand">Sorya</div>
+                    <div className="auth-brand" style={{ lineHeight: 0 }}><img src="/sorya-logo.png" alt="Sorya" className="brand-logo" style={{ height: 48, width: 'auto', display: 'block' }} /></div>
                     <div className="auth-hero-copy">
                         <h2>Ship ideas instantly</h2>
                         <p>Describe your product. Watch the repo scaffold itself and iterate in real-time.</p>

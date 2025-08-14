@@ -16,7 +16,12 @@ function parseFirstError(log: string): string | null {
     return errLine || null;
 }
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest, { params }: { params: { projectId: string } }) {
+    if ((authOptions as any).adapter === undefined) {
+        return NextResponse.json({ bypassed: true, message: 'Auth disabled; deployment endpoint inactive' }, { status: 200 });
+    }
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const parse = ParamsSchema.safeParse(params);
@@ -106,6 +111,9 @@ export async function POST(req: NextRequest, { params }: { params: { projectId: 
 }
 
 export async function GET(req: NextRequest, { params }: { params: { projectId: string } }) {
+    if ((authOptions as any).adapter === undefined) {
+        return NextResponse.json({ bypassed: true, deployment: null }, { status: 200 });
+    }
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const parse = ParamsSchema.safeParse(params);

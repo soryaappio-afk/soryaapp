@@ -1,10 +1,11 @@
 "use client";
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 import { signIn } from 'next-auth/react';
 import OAuthButton from '@/src/app/components/OAuthButton';
 import { useToast } from '@/src/app/components/Toast';
+import ThemeToggle from '@/src/components/ThemeToggle';
 
-export default function RegisterPage() {
+function RegisterInner() {
     const { push } = useToast();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -34,7 +35,10 @@ export default function RegisterPage() {
     }
 
     return (
-        <div className="auth-shell">
+        <div className="auth-shell" style={{ position: 'relative' }}>
+            <div style={{ position: 'fixed', top: 14, right: 14, zIndex: 10 }}>
+                <ThemeToggle />
+            </div>
             <div className="auth-left">
                 <div className="auth-panel">
                     <h1>Create account</h1>
@@ -66,5 +70,13 @@ export default function RegisterPage() {
                 </div>
             </div>
         </div>
+    );
+}
+
+export default function RegisterPage() {
+    return (
+        <Suspense fallback={<div style={{ padding: '2rem', fontSize: 14 }}>Loading…</div>}>
+            <RegisterInner />
+        </Suspense>
     );
 }

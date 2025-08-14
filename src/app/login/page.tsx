@@ -4,8 +4,10 @@ import OAuthButton from '@/src/app/components/OAuthButton';
 import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/src/app/components/Toast';
+import ThemeToggle from '@/src/components/ThemeToggle';
+import { Suspense } from 'react';
 
-export default function LoginPage() {
+function LoginInner() {
     const { push } = useToast();
     const search = useSearchParams();
     useEffect(() => {
@@ -22,20 +24,16 @@ export default function LoginPage() {
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
     const router = useRouter();
-
     async function onSubmit(e: React.FormEvent) {
         e.preventDefault();
         setLoading(true);
         const res = await signIn('credentials', { email, password, redirect: false });
         setLoading(false);
-        if (res?.ok) router.push('/dashboard');
-        else {
-            push({ kind: 'error', message: 'Login failed. If you registered with email/password, use that form not Google/GitHub.' });
-        }
+        if (res?.ok) router.push('/dashboard'); else push({ kind: 'error', message: 'Login failed. If you registered with email/password, use that form not Google/GitHub.' });
     }
-
     return (
-        <div className="auth-shell">
+        <div className="auth-shell" style={{ position: 'relative' }}>
+            <div style={{ position: 'fixed', top: 14, right: 14, zIndex: 10 }}><ThemeToggle /></div>
             <div className="auth-left">
                 <div className="auth-panel">
                     <h1>Welcome back</h1>
@@ -65,5 +63,13 @@ export default function LoginPage() {
                 </div>
             </div>
         </div>
+    );
+}
+
+export default function LoginPage() {
+    return (
+        <Suspense fallback={<div style={{ padding: '2rem', fontSize: 14 }}>Loading…</div>}>
+            <LoginInner />
+        </Suspense>
     );
 }

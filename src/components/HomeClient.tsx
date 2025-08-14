@@ -202,6 +202,8 @@ export default function HomeClient({ session, projects, credits }: Props) {
         }
     }
 
+    const isAuthed = !!session?.user;
+
     return (
         <div style={{ display: 'flex', minHeight: '100vh', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', position: 'relative' }}>
             <SiteHeader session={session} credits={credits} />
@@ -223,14 +225,15 @@ export default function HomeClient({ session, projects, credits }: Props) {
                             <textarea
                                 ref={promptRef}
                                 value={prompt}
-                                onChange={e => setPrompt(e.target.value)}
+                                readOnly={!isAuthed}
+                                onChange={e => { if (!isAuthed) { setShowAuthModal(true); return; } setPrompt(e.target.value); }}
                                 onKeyDown={onKey}
-                                onFocus={() => setIsFocused(true)}
+                                onClick={() => { if (!isAuthed) { setShowAuthModal(true); promptRef.current?.blur(); } }}
+                                onFocus={() => { setIsFocused(true); if (!isAuthed) { setShowAuthModal(true); setTimeout(() => promptRef.current?.blur(), 0); } }}
                                 onBlur={() => setIsFocused(false)}
                                 aria-label="Describe your app"
                                 placeholder={''}
-                                disabled={!session?.user}
-                                style={{ width: '100%', resize: 'none', fontSize: 15, padding: '0.35rem 3.4rem 0.35rem .6rem', border: 'none', background: 'transparent', color: 'var(--text)', lineHeight: 1.5, outline: 'none', minHeight: 54, maxHeight: 260, overflow: 'auto', fontFamily: 'inherit' }}
+                                style={{ width: '100%', cursor: !isAuthed ? 'pointer' : 'text', resize: 'none', fontSize: 15, padding: '0.35rem 3.4rem 0.35rem .6rem', border: 'none', background: 'transparent', color: 'var(--text)', lineHeight: 1.5, outline: 'none', minHeight: 54, maxHeight: 260, overflow: 'auto', fontFamily: 'inherit', opacity: !isAuthed ? .85 : 1 }}
                             />
                             {(!prompt && !isFocused) && (
                                 <div style={{ position: 'absolute', left: 24, top: 14, right: 70, pointerEvents: 'none', fontSize: 15, color: 'var(--text-dim)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'break-word', maxWidth: 'calc(100% - 110px)', lineHeight: 1.5, opacity: .9 }}>
@@ -238,7 +241,13 @@ export default function HomeClient({ session, projects, credits }: Props) {
                                     <span style={{ display: 'inline-block', width: 8, background: 'transparent', animation: 'blink 1s steps(1) infinite' }}>|</span>
                                 </div>
                             )}
-                            <button type="submit" disabled={!session?.user || (!loading && !prompt.trim())} aria-label="Create project" style={{ position: 'absolute', bottom: 8, right: 8, width: 48, height: 48, borderRadius: 28, border: 'none', background: loading ? '#b91c1c' : 'linear-gradient(135deg,var(--hero-start),var(--hero-end))', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 600, boxShadow: '0 4px 18px -6px rgba(0,0,0,0.35)', cursor: 'pointer', transition: 'background .25s, transform .15s', outline: 'none' }}>
+                            <button
+                                type="submit"
+                                onClick={e => { if (!isAuthed) { e.preventDefault(); setShowAuthModal(true); } }}
+                                disabled={loading || (isAuthed && !prompt.trim())}
+                                aria-label="Create project"
+                                style={{ position: 'absolute', bottom: 8, right: 8, width: 48, height: 48, borderRadius: 28, border: 'none', background: loading ? '#b91c1c' : 'linear-gradient(135deg,var(--hero-start),var(--hero-end))', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 600, boxShadow: '0 4px 18px -6px rgba(0,0,0,0.35)', cursor: 'pointer', transition: 'background .25s, transform .15s', outline: 'none', opacity: !isAuthed ? 1 : 1 }}
+                            >
                                 {loading ? (
                                     <span style={{ width: 18, height: 18, border: '3px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin .8s linear infinite' }} />
                                 ) : (

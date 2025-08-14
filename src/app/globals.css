@@ -54,6 +54,7 @@ img.brand-logo {
     padding: 4px 6px;
     display: inline-block;
 }
+
 [data-theme='dark'] img.brand-logo {
     background: transparent;
     padding: 0;
@@ -177,6 +178,11 @@ img.brand-logo {
     flex-direction: column;
     justify-content: space-between;
     padding: 2.5rem 3rem;
+    color: #fff;
+}
+
+/* Ensure light theme hero panel text contrasts when gradient is lighter */
+[data-theme='light'] .auth-right-inner {
     color: #fff;
 }
 

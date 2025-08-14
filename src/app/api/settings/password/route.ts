@@ -25,6 +25,9 @@ export async function POST(req: NextRequest) {
         const { currentPassword, newPassword } = parse.data;
         const user = await prisma.user.findUnique({ where: { id: session.user.id } });
         if (!user) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+        if (!user.passwordHash) {
+            return NextResponse.json({ error: 'No existing password. Set one by linking email credentials first.' }, { status: 400 });
+        }
         const ok = await bcrypt.compare(currentPassword, user.passwordHash);
         if (!ok) return NextResponse.json({ error: 'Current password incorrect' }, { status: 400 });
         const hash = await bcrypt.hash(newPassword, 10);

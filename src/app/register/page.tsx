@@ -2,8 +2,10 @@
 import { useState } from 'react';
 import { signIn } from 'next-auth/react';
 import OAuthButton from '@/src/app/components/OAuthButton';
+import { useToast } from '@/src/app/components/Toast';
 
 export default function RegisterPage() {
+    const { push } = useToast();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [confirm, setConfirm] = useState('');
@@ -24,6 +26,9 @@ export default function RegisterPage() {
             else window.location.href = '/login';
         } else {
             const data = await res.json().catch(() => ({}));
+            if (data.error === 'Exists') {
+                push({ kind: 'warning', message: 'Account already exists. Sign in with your email & password (not Google/GitHub).' });
+            }
             setError(data.error || 'Failed');
         }
     }

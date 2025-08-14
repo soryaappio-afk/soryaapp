@@ -2,6 +2,7 @@ import React from 'react';
 import './globals.css';
 import { Metadata } from 'next';
 import CreditsRoot from '../components/CreditsRoot';
+import { ToastProvider } from './components/Toast';
 
 export const metadata: Metadata = {
     title: 'Sorya',
@@ -12,7 +13,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return (
         <html lang="en">
             <body>
-                <CreditsRoot>{children}</CreditsRoot>
+                <ToastProvider>
+                    <CreditsRoot>{children}</CreditsRoot>
+                </ToastProvider>
             </body>
         </html>
     );

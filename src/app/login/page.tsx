@@ -3,8 +3,10 @@ import { signIn } from 'next-auth/react';
 import OAuthButton from '@/src/app/components/OAuthButton';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useToast } from '@/src/app/components/Toast';
 
 export default function LoginPage() {
+    const { push } = useToast();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
@@ -16,7 +18,9 @@ export default function LoginPage() {
         const res = await signIn('credentials', { email, password, redirect: false });
         setLoading(false);
         if (res?.ok) router.push('/dashboard');
-        else alert('Login failed');
+        else {
+            push({ kind: 'error', message: 'Login failed. If you registered with email/password, use that form not Google/GitHub.' });
+        }
     }
 
     return (

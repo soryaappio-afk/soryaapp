@@ -58,6 +58,8 @@ export const authOptions: NextAuthOptions = {
             clientSecret: process.env.GOOGLE_CLIENT_SECRET || ''
         })
     ],
+    // Helpful debug info for redirect URI mismatches in dev / preview
+    debug: process.env.NODE_ENV !== 'production',
     pages: {
         signIn: '/login'
     },
@@ -79,3 +81,13 @@ export const authOptions: NextAuthOptions = {
         }
     }
 };
+
+// Log the exact redirect URI Google expects so user can copy into Google Cloud console.
+if (process.env.NODE_ENV !== 'production') {
+    const base = (process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')).replace(/\/$/, '');
+    const googleRedirect = `${base}/api/auth/callback/google`;
+    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+        console.warn('[auth][google] GOOGLE_CLIENT_ID / SECRET not set');
+    }
+    console.log('[auth][google] Add this Redirect URI in Google Cloud Console > Credentials > OAuth 2.0 Client IDs:', googleRedirect);
+}

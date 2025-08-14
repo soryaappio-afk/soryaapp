@@ -14,15 +14,19 @@ export default async function HomePage() {
     const session: any = await getServerSession(authOptions as any);
     let projects: any[] = [];
     let credits: number | null = null;
-    if (session?.user) {
+    if (session?.user && prisma) {
         const userId = session.user.id;
         await ensureInitialGrant(userId);
         const balance = await getCreditBalance(userId);
-        const [proj] = await Promise.all([
-            prisma.project.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } })
-        ]);
-        projects = proj;
-        credits = balance;
+        try {
+            const [proj] = await Promise.all([
+                prisma.project.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } })
+            ]);
+            projects = proj;
+            credits = balance;
+        } catch {
+            // swallow if prisma temporarily unavailable
+        }
     }
     const firstProject = projects[0];
     return (

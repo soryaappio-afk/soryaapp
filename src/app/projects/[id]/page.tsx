@@ -3,29 +3,35 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/src/lib/auth';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import dynamic from 'next/dynamic';
+import nextDynamic from 'next/dynamic';
 import { Prisma } from '@prisma/client';
 
-const ProjectChatClient = dynamic(() => import('@/src/components/ProjectChatClient'), { ssr: false });
-const ProjectAutoRunner = dynamic(() => import('@/src/components/ProjectAutoRunner'), { ssr: false });
-const LiveProjectPreview = dynamic(() => import('@/src/components/LiveProjectPreview'), { ssr: false });
+export const dynamic = 'force-dynamic';
+
+const ProjectChatClient = nextDynamic(() => import('@/src/components/ProjectChatClient'), { ssr: false });
+const ProjectAutoRunner = nextDynamic(() => import('@/src/components/ProjectAutoRunner'), { ssr: false });
+const LiveProjectPreview = nextDynamic(() => import('@/src/components/LiveProjectPreview'), { ssr: false });
 
 interface Props { params: { id: string } }
 
 export default async function ProjectPage({ params }: Props) {
+    if ((authOptions as any).adapter === undefined || !prisma) {
+        return <div style={{ padding: '2rem', fontFamily: 'system-ui,sans-serif' }}>
+            <h2 style={{ margin: 0, fontSize: 20 }}>Project view unavailable</h2>
+            <p style={{ marginTop: 10, fontSize: 14 }}>Authentication / database not configured yet.</p>
+        </div>;
+    }
     const session = await getServerSession(authOptions as any) as any;
     if (!session?.user) redirect('/login');
     const userId = (session.user as any).id as string;
     const project = await prisma.project.findFirst({ where: { id: params.id, userId } });
     if (!project) return <div style={{ padding: '2rem' }}>Not found</div>;
     const messages = await prisma.chatMessage.findMany({ where: { projectId: params.id }, orderBy: { createdAt: 'asc' } });
-    // Get latest snapshot files
     let files: { path: string; content: string }[] = [];
     if (project.lastSnapshotId) {
         const snap = await prisma.projectSnapshot.findUnique({ where: { id: project.lastSnapshotId } });
         if (snap) files = (snap.files as any[]) as { path: string; content: string }[];
     }
-    // Fetch credits balance
     let credits: number | null = null;
     try {
         const ledger = await prisma.creditLedger.aggregate({ _sum: { delta: true }, where: { userId } });
@@ -34,7 +40,6 @@ export default async function ProjectPage({ params }: Props) {
             credits = user?.credits ?? null;
         }
     } catch { }
-
     const pusherKey = process.env.NEXT_PUBLIC_PUSHER_KEY;
     const pusherCluster = process.env.NEXT_PUBLIC_PUSHER_CLUSTER;
     return (

@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useRef, useEffect } from 'react';
+import { useCredits } from '@/src/components/CreditsRoot';
 
 interface ChatMessage { id?: string; role: string; content: string }
 interface Props {
@@ -15,51 +16,52 @@ export default function ProjectChatClient({ projectId, initialMessages, initialC
     const [prompt, setPrompt] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [credits, setCredits] = useState<number | null>(initialCredits);
+    const { balance, setBalance } = (() => { try { return useCredits(); } catch { return { balance: null as number | null, setBalance: (_: number | null) => { } } as any; } })();
+    const [credits, setCredits] = useState<number | null>(initialCredits ?? balance);
     const [wasAborted, setWasAborted] = useState(false);
-    const [externalPending, setExternalPending] = useState(false);
+    const [externalPending, setExternalPending] = useState(false); // deprecated spinner state
     const abortRef = useRef<AbortController | null>(null);
     const bottomRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-    // Detect if initial messages only contain an initial user message (auto-run scenario)
-    useEffect(() => {
-        if (messages.length === 1 && messages[0].role === 'user') {
-            setExternalPending(true);
-            // Poll for new messages every 2s until assistant appears
-            const interval = setInterval(async () => {
-                try {
-                    const res = await fetch('/api/projects/' + projectId + '/deploy'); // lightweight endpoint we have; alternatively create a messages endpoint
-                    // (Using deploy endpoint as placeholder ping)
-                } catch { }
-                // In real impl, we would fetch messages; for now rely on user reload or next interaction
-            }, 2000);
-            return () => clearInterval(interval);
-        }
-    }, []);
+    // Removed legacy auto-run waiting spinner & deploy polling
+    useEffect(() => { setExternalPending(false); }, []);
 
     async function send() {
         if (!prompt.trim() || loading) return;
         setLoading(true); setError(null); setWasAborted(false);
         const userMsg = { role: 'user', content: prompt };
         setMessages(m => [...m, userMsg]);
+        setMessages(m => [...m, { role: 'assistant', content: '⏳ Generating plan & code…' }]);
         const localPrompt = prompt;
         const controller = new AbortController();
         abortRef.current = controller;
         try {
-            const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: localPrompt, projectId }), signal: controller.signal });
+            // Always start with plan phase (backend will spawn background code phase)
+            const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: localPrompt, projectId, phase: 'plan' }), signal: controller.signal });
             if (res.ok) {
                 const data = await res.json();
+                // Remove temporary streaming placeholder(s)
+                setMessages(m => m.filter(msg => msg.content !== '⏳ Generating plan & code…'));
                 if (Array.isArray(data.steps)) {
                     const systemMsgs = data.steps
                         .filter((s: any) => ['snapshot_complete', 'deploy_result', 'patch_apply', 'diff_summary'].includes(s.type))
                         .map((s: any) => ({ role: 'system', content: s.type.replace(/_/g, ' ') }));
-                    setMessages(m => [...m, ...systemMsgs, { role: 'assistant', content: data.messages[1].content }]);
+                    setMessages(m => [...m, ...systemMsgs, { role: 'assistant', content: data.displayAssistant || data.messages[1].content }]);
                 } else {
-                    setMessages(m => [...m, { role: 'assistant', content: data.messages[1].content }]);
+                    setMessages(m => [...m, { role: 'assistant', content: data.displayAssistant || data.messages[1].content }]);
                 }
-                if (typeof data.balance === 'number') setCredits(data.balance);
+                if (data.fullGenerationPending) {
+                    // Indicate background code phase running
+                    setMessages(m => [...m, { role: 'system', content: 'Background code generation started…' }]);
+                }
+                setExternalPending(false);
+                if (typeof data.balance === 'number') { setCredits(data.balance); setBalance(data.balance); }
+                if (data.snapshotId) {
+                    // Dispatch custom event so LiveProjectPreview updates immediately
+                    try { window.dispatchEvent(new CustomEvent('sorya:snapshot-updated', { detail: { projectId } })); } catch { }
+                }
             } else {
                 if (res.status === 401) {
                     setMessages(m => [...m, { role: 'assistant', content: 'Unauthorized.' }]);
@@ -73,8 +75,9 @@ export default function ProjectChatClient({ projectId, initialMessages, initialC
         } catch (e: any) {
             if (e?.name === 'AbortError') {
                 setWasAborted(true);
-                setMessages(m => [...m, { role: 'system', content: 'Generation canceled.' }]);
+                setMessages(m => m.filter(msg => msg.content !== '⏳ Generating plan & code…'));
             } else {
+                setMessages(m => m.filter(msg => msg.content !== '⏳ Generating plan & code…'));
                 setMessages(m => [...m, { role: 'assistant', content: 'Generation failed.' }]);
                 setError('Generation failed');
             }
@@ -101,7 +104,7 @@ export default function ProjectChatClient({ projectId, initialMessages, initialC
                 {credits != null && <div style={{ fontSize: 12, color: credits <= 200 ? '#b45309' : '#555' }}>{credits} credits left</div>}
             </div>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14, minHeight: 300, maxHeight: '60vh', overflowY: 'auto', paddingRight: 4 }}>
-                {externalPending && <div style={{ fontSize: 12, color: '#555', display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ width: 14, height: 14, border: '2px solid rgba(0,0,0,0.3)', borderTopColor: '#000', borderRadius: '50%', animation: 'spin .8s linear infinite' }} />Waiting for first generation...</div>}
+                {/* externalPending spinner removed */}
                 {messages.map((m, i) => <Bubble key={i} role={m.role} content={m.content} />)}
                 <div ref={bottomRef} />
             </div>

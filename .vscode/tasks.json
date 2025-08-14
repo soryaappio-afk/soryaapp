@@ -10,6 +10,13 @@
 			"problemMatcher": [
 				"$tsc"
 			]
+		},
+		{
+			"label": "dev",
+			"type": "shell",
+			"command": "bash -lc 'source ~/.bashrc; npm run dev'",
+			"isBackground": true,
+			"group": "build"
 		}
 	]
 }

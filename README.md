@@ -175,7 +175,7 @@ VERCEL_TOKEN= (personal/team token with project:create, deployment permissions)
 VERCEL_TEAM_ID= (optional if team scope)
 # AI
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5
+OPENAI_MODEL=gpt-5-2025-08-07
 # Billing
 STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=

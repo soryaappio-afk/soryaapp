@@ -104,6 +104,7 @@ model ProjectSnapshot {
   project   Project  @relation(fields: [projectId], references: [id])
   projectId String
   summary   String?
+  previewStrategy String?
   files     Json
   createdAt DateTime @default(now())
 }

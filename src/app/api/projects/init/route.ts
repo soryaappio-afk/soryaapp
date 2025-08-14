@@ -37,11 +37,14 @@ async function classifyPrompt(prompt: string) {
 
 export async function POST(req: NextRequest) {
     try {
+        console.log('[api/projects/init] incoming');
         // If auth adapter is bypassed (early deploy without DB/auth), short‑circuit.
         if ((authOptions as any).adapter === undefined) {
+            console.log('[api/projects/init] bypass adapter');
             return NextResponse.json({ bypassed: true }, { status: 200 });
         }
         if (!prisma || !prismaAvailable) {
+            console.warn('[api/projects/init] prisma unavailable');
             return NextResponse.json({ bypassed: true, db: false }, { status: 200 });
         }
         const session: any = await getServerSession(authOptions as any);
@@ -51,14 +54,18 @@ export async function POST(req: NextRequest) {
         const parsed = BodySchema.safeParse(json);
         if (!parsed.success) return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
         const { prompt } = parsed.data;
+        console.log('[api/projects/init] parsed body', { promptPreview: prompt.slice(0, 120), len: prompt.length, userId });
         // Create project quickly (no credits deducted yet)
         const { type, confidence } = await classifyPrompt(prompt);
         const appName = deriveAppName(prompt);
         const project = await prisma.project.create({ data: { userId, name: appName, type, typeConfidence: confidence } });
+        console.log('[api/projects/init] project created', { projectId: project.id, name: project.name, type: project.type });
         // Store initial user message so project page can kick off generation
         await prisma.chatMessage.create({ data: { userId, projectId: project.id, role: 'user', content: prompt } });
+        console.log('[api/projects/init] initial message stored');
         return NextResponse.json({ projectId: project.id, projectName: project.name, projectType: project.type, typeConfidence: project.typeConfidence });
     } catch (e: any) {
+        console.error('[api/projects/init] error', e?.message);
         return NextResponse.json({ error: 'unavailable', message: e?.message }, { status: 200 });
     }
 }

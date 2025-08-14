@@ -1,6 +1,7 @@
 import React from 'react';
 import './globals.css';
 import { Metadata } from 'next';
+import CreditsRoot from '../components/CreditsRoot';
 
 export const metadata: Metadata = {
     title: 'Sorya',
@@ -10,7 +11,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
     return (
         <html lang="en">
-            <body>{children}</body>
+            <body>
+                <CreditsRoot>{children}</CreditsRoot>
+            </body>
         </html>
     );
 }

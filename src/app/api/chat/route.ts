@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma, prismaAvailable } from '@/src/lib/db';
+import { buildPreviewHtml, buildSiteMockHtml, parsePlanSections } from '@/src/lib/previewBuilder';
 import { z } from 'zod';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/src/lib/auth';
@@ -16,11 +17,11 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
 // Real OpenAI call (with fallback to placeholder if error or missing key)
-async function generateAssistantReply(prompt: string, opts: { diffSummary?: any; projectId: string; model?: string }) {
-    const { diffSummary, projectId, model } = opts;
+async function generateAssistantReply(prompt: string, opts: { diffSummary?: any; projectId: string; model?: string; planOnly?: boolean }) {
+    const { diffSummary, projectId, model, planOnly } = opts;
     const chosenModel = model || OPENAI_MODEL;
     const forceGpt5 = true; // always try gpt-5 first per requirement
-    const primaryModel = forceGpt5 ? 'gpt-5' : chosenModel;
+    const primaryModel = forceGpt5 ? 'gpt-5-2025-08-07' : chosenModel;
     // Removed fallback model usage per requirement (only gpt-5)
     const useResponsesApi = /^gpt-5/i.test(primaryModel);
     if (!process.env.OPENAI_API_KEY) {
@@ -56,9 +57,13 @@ async function generateAssistantReply(prompt: string, opts: { diffSummary?: any;
     const systemCore = [
         'You are Sorya, a highly diligent senior full-stack engineer AI that incrementally designs, refactors and extends the project.',
         'Style: decisive, no laziness, give concrete implementation guidance, list next actionable steps.',
-        'Always output a leading "File Plan:" section BEFORE numbered sections. Each File Plan line: CREATE|UPDATE|DELETE <path> – short purpose. Only include real actions needed now. Use paths within app/, components/, lib/, prisma/, src/, or root files. If no changes, write CREATE app/placeholder.txt – explain (rare).',
-        `Structure every answer EXACTLY as:\nFile Plan:\n<lines>\n\n1) Summary of intent\n2) Proposed changes / code notes\n3) Potential pitfalls\n4) Next TODO bullets (<=6)\nReturn plain text only. Keep total under 350 tokens unless user asks for more. Return all sections even if brief. Avoid adding extra sections.`
+        'Always output a leading "File Plan:" section BEFORE numbered sections. Each File Plan line: CREATE|UPDATE|DELETE <path> – short purpose. Only include real actions needed now. Use paths within app/, components/, lib/, prisma/, src/, public/, or root files. ALWAYS include: (a) CREATE preview.html on first generation, (b) thereafter UPDATE preview.html EVERY response to reflect the new state (a static compiled representation with inline CSS, no external calls). Provide at least: app/page.tsx + preview.html on first generation. Never produce placeholder text indicating failure.',
+        'After the numbered sections, output concrete file contents for every CREATE or UPDATE using EXACT XML-ish blocks so the backend can parse them. Use this format strictly: <file path="app/page.tsx">\n<full file content here>\n</file> . One block per file. Skip unchanged files. Do NOT wrap inside markdown fences. No extra commentary inside the block.',
+        `Structure every answer EXACTLY as:\nFile Plan:\n<lines>\n\n1) Summary of intent\n2) Proposed changes / code notes\n3) Potential pitfalls\n4) Next TODO bullets (<=6)\n\n<file path="...">\n...\n</file> (zero or more blocks)\nReturn plain text only. Keep total under 420 tokens unless user asks for more. Return all sections even if brief. Avoid adding extra sections beyond the file blocks.`
     ];
+    if (planOnly) {
+        systemCore.push('OVERRIDE CURRENT INSTRUCTIONS: This is a PLAN-ONLY phase. Return ONLY the File Plan lines and the numbered sections 1-4. DO NOT include any <file path="..."> code blocks or other code. Keep under 300 tokens, concise and actionable.');
+    }
     if (extraContext) systemCore.push(extraContext);
     if (openTodos) systemCore.push(openTodos);
     if (diffSummary) {
@@ -78,10 +83,11 @@ async function generateAssistantReply(prompt: string, opts: { diffSummary?: any;
     console.log('[AI] primaryModel:', primaryModel, 'useResponsesApi:', useResponsesApi, 'historyMsgs:', recentMessages.length);
 
     const attemptResponses = async (): Promise<string | null> => {
+        console.log('[api/chat] attemptResponses:start');
         const basePayload: any = {
             model: primaryModel,
             input: linearInput + '\n\nPlease respond now.',
-            max_output_tokens: 420,
+            max_output_tokens: planOnly ? 320 : 420,
             text: { format: { type: 'text' } }
         };
         const reasoningOnly = (resp: any) => Array.isArray(resp?.output) && resp.output.length > 0 && resp.output.every((o: any) => o.type === 'reasoning');
@@ -96,7 +102,15 @@ async function generateAssistantReply(prompt: string, opts: { diffSummary?: any;
                     if (!r.ok) { let errBody = ''; try { errBody = await r.text(); } catch { } console.warn('[AI] responses http error', tag, r.status, errBody.slice(0, 800)); return null; }
                     return await r.json();
                 };
-                const resp = await doReq();
+                const timeoutMs = 25000;
+                const resp = await Promise.race([
+                    doReq(),
+                    new Promise<any>(res => setTimeout(() => res({ __timeout: true }), timeoutMs))
+                ]);
+                if (resp?.__timeout) {
+                    console.warn('[AI] responses timeout', tag, timeoutMs);
+                    return { text: null, resp: null };
+                }
                 if (!resp) return { text: null, resp: null };
                 try {
                     const outMeta = Array.isArray(resp.output) ? resp.output.map((o: any) => ({ type: o.type, hasContent: !!o.content, contentTypes: Array.isArray(o.content) ? o.content.map((c: any) => c.type) : undefined })) : undefined;
@@ -138,22 +152,148 @@ async function generateAssistantReply(prompt: string, opts: { diffSummary?: any;
         };
         // First attempt
         const first = await execOnce(basePayload, 'first');
+        console.log('[api/chat] attemptResponses:firstComplete', { hasText: !!first.text });
         if (first.text && !reasoningOnly(first.resp)) return first.text;
         const needRetry = (!first.text || reasoningOnly(first.resp));
         if (!needRetry) return first.text;
         console.log('[AI] retrying due to reasoning-only / empty output');
-        const retryPayload = { ...basePayload, input: basePayload.input + '\n\nFINAL ANSWER REQUIRED NOW: Output File Plan and all numbered sections strictly as instructed. Do NOT include reasoning tokens.', max_output_tokens: 700 };
+        const retryPayload = { ...basePayload, input: basePayload.input + '\n\nFINAL ANSWER REQUIRED NOW: Output File Plan and all numbered sections strictly as instructed. Do NOT include reasoning tokens.' + (planOnly ? ' NO CODE BLOCKS.' : ''), max_output_tokens: planOnly ? 360 : 700 };
         const second = await execOnce(retryPayload, 'retry');
+        console.log('[api/chat] attemptResponses:retryComplete', { hasText: !!second.text });
         if (second.text && !reasoningOnly(second.resp)) return second.text;
+        // Fallback stub if still no usable text
+        if (!second.text || reasoningOnly(second.resp)) {
+            console.warn('[api/chat] attemptResponses:fallbackStub');
+            return [
+                'File Plan:',
+                'CREATE app/page.tsx – Initial application shell',
+                'CREATE preview.html – Rendered static preview for iframe',
+                '',
+                '1) Summary of intent',
+                'Provide a minimal yet production-style starter implementing the user prompt.',
+                '2) Proposed changes / code notes',
+                '- app/page.tsx React entry with semantic sections.',
+                '- preview.html static version for fast iframe preview (no build step).',
+                '3) Potential pitfalls',
+                '- Missing build pipeline for advanced assets.',
+                '4) Next TODO bullets',
+                '- Enrich UI components', '- Add styling file', '- Implement interactions', '- Add routing', '- Add persistent data', '- Add auth',
+                '',
+                '<file path="app/page.tsx">',
+                `export default function GeneratedPage(){return (<main style={{fontFamily:'system-ui',padding:'2.5rem 2rem',lineHeight:1.5}}><header style={{marginBottom:'2rem'}}><h1 style={{margin:0,fontSize:'2.1rem'}}>\n${prompt.replace(/`/g, '\\`').slice(0, 120)}\n</h1><p style={{margin:'0.6rem 0 0',maxWidth:680,color:'#555'}}>Initial scaffold (fallback) – extend with components, state management and persistence.</p></header><section><h2 style={{fontSize:'1.15rem',margin:'0 0 .6rem'}}>Getting Started</h2><ul style={{margin:'0 0 1.2rem',paddingLeft:'1.2rem'}}><li>Refine requirements in the chat.</li><li>Generate additional components.</li><li>Iterate and redeploy.</li></ul></section></main>);}`,
+                '</file>',
+                '<file path="preview.html">',
+                `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" /><title>Preview</title><meta name="viewport" content="width=device-width,initial-scale=1"/><style>body{margin:0;font-family:system-ui;background:#0f1115;color:#f1f5f9;}main{max-width:860px;margin:0 auto;padding:40px 32px;}h1{background:linear-gradient(90deg,#6366f1,#8b5cf6);-webkit-background-clip:text;color:transparent;}header p{color:#94a3b8;}section{background:#111827;padding:24px 28px;border:1px solid #1e293b;border-radius:18px;}ul{line-height:1.55}code{background:#1e293b;padding:2px 5px;border-radius:4px;font-size:13px}</style></head><body><main><header><h1>${prompt.replace(/</g, '&lt;').slice(0, 120)}</h1><p>Scaffold generated while full model output was unavailable. Continue chatting to refine.</p></header><section><h2>Next Steps</h2><ul><li>Add components & routes</li><li>Design system/theme</li><li>Auth + data layer</li><li>Deployment integration</li></ul></section></main></body></html>`,
+                '</file>'
+            ].join('\n');
+        }
         return second.text; // may be reasoning summary or null
     };
 
     if (useResponsesApi) {
         const out = await attemptResponses();
-        return out || 'No content generated (reasoning-only). Please clarify your request.';
+        console.log('[api/chat] attemptResponses:done', { hasOut: !!out, length: out?.length });
+        return out || 'File Plan:\nCREATE app/page.tsx – Empty fallback\n\n1) Summary\nNo content.\n2) Proposed changes\nAdd placeholder.\n3) Potential pitfalls\nModel empty.\n4) Next TODO bullets\n- Retry\n\n<file path="app/page.tsx">export default function Empty(){return <div style={{padding:\'2rem\'}}><h1>Empty</h1><p>No content.</p></div>}</file>';
     }
     // If somehow not using responses API (should not happen with forced gpt-5)
     return 'Model path unavailable.';
+}
+
+// Second phase: given a set of planned file paths, ask model to return ONLY <file> blocks with full implementations.
+async function generateFileBodiesForPlan(projectId: string, userPrompt: string, planFiles: { action: string; path: string; note?: string }[]): Promise<string> {
+    if (!process.env.OPENAI_API_KEY) {
+        return planFiles.map(f => `<file path="${f.path}">// Placeholder for ${f.path} (no API key)</file>`).join('\n');
+    }
+    const openaiLocal: any = openai as any;
+    const model = 'gpt-5-2025-08-07';
+    const instructions = [
+        'You are Sorya second-phase code generator. The file plan is approved. Output ONLY file blocks with complete contents (no commentary).',
+        'Each file MUST be in format: <file path="path">\n...code...\n</file>',
+        'Do NOT include a File Plan again. Do NOT include numbered sections. No markdown fences. Just the file blocks in any order.',
+        'Implement production-quality minimal code reflecting the user prompt and notes.'
+    ].join('\n');
+    const fileListDesc = planFiles.map(f => `${f.action} ${f.path} - ${f.note || ''}`.trim()).join('\n');
+    const input = `${instructions}\n\nUser prompt:\n${userPrompt}\n\nPlanned files:\n${fileListDesc}\n\nReturn the file blocks now:`;
+    const payload: any = { model, input, max_output_tokens: 1400, text: { format: { type: 'text' } } };
+    try {
+        const hasResponses = !!openaiLocal.responses?.create;
+        const resp = hasResponses ? await openaiLocal.responses.create(payload) : await (await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })).json();
+        const collect = (r: any): string => {
+            if (r.output_text) return r.output_text;
+            const out: string[] = [];
+            if (Array.isArray(r.output)) for (const o of r.output) {
+                if (o.type === 'output_text' && o.text) out.push(typeof o.text === 'string' ? o.text : o.text.value || '');
+                if (o.type === 'message' && Array.isArray(o.content)) for (const c of o.content) if (c.type === 'text' && c.text) out.push(typeof c.text === 'string' ? c.text : c.text.value || '');
+            }
+            return out.join('\n');
+        };
+        const text = collect(resp).trim();
+        if (!text.includes('<file')) {
+            return planFiles.map(f => `<file path="${f.path}">/* Second-phase fallback for ${f.path} */</file>`).join('\n');
+        }
+        return text;
+    } catch (e: any) {
+        console.warn('[api/chat] second-phase generation failed', e?.message);
+        return planFiles.map(f => `<file path="${f.path}">/* Second-phase error: ${e?.message} */</file>`).join('\n');
+    }
+}
+
+// Generate an end-result style single-page HTML (inline CSS/JS) for immediate visual preview.
+async function generateVisualSiteDraft(userPrompt: string, planLines: string[], projectName: string): Promise<string | null> {
+    if (!process.env.OPENAI_API_KEY) return null;
+    try {
+        const openaiLocal: any = openai as any;
+        const model = 'gpt-5-2025-08-07';
+        const instructions = [
+            'You are Sorya visual draft generator.',
+            'Output ONLY a single complete self-contained HTML5 document with <html> root. NO markdown fences. NO explanations.',
+            'Inline all CSS (in <style>) and JS (in <script>) if needed. Keep total under 22 KB.',
+            'Design goals: modern, accessible, responsive, good vertical rhythm, gradient hero, clear typography.',
+            'Use semantic sections (header, main, section, footer). Provide a hero, feature/cards, and optional call-to-action.',
+            'Do NOT include external network calls, analytics, fonts CDN, or images that require fetch (inline SVG / placeholders ok).',
+            'If user intent implies interactivity (game, form, simple app) include minimal JS implementing core behavior (keep it small).',
+            'Prefer system-ui / sans-serif fonts. Dark theme base. Provide light subtle animations (CSS only) when reasonable.'
+        ].join('\n');
+        const planHint = planLines.slice(0, 12).join('\n');
+        const input = `${instructions}\n\nProject: ${projectName}\nUser Prompt:\n${userPrompt}\n\nPlanned Files (hints):\n${planHint}\n\nReturn ONLY the HTML document now:`;
+        const payload: any = { model, input, max_output_tokens: 900, text: { format: { type: 'text' } } };
+        const hasResponses = !!openaiLocal.responses?.create;
+        const resp = hasResponses ? await openaiLocal.responses.create(payload) : await (await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })).json();
+        const extract = (r: any): string => {
+            if (!r) return '';
+            if (r.output_text) return r.output_text;
+            const out: string[] = [];
+            if (Array.isArray(r.output)) for (const o of r.output) {
+                if (o.type === 'output_text' && o.text) out.push(typeof o.text === 'string' ? o.text : o.text.value || '');
+                if (o.type === 'message' && Array.isArray(o.content)) for (const c of o.content) if (c.type === 'text' && c.text) out.push(typeof c.text === 'string' ? c.text : c.text.value || '');
+            }
+            return out.join('\n');
+        };
+        let html = extract(resp).trim();
+        // Strip accidental fences
+        html = html.replace(/^```html\s*|```$/gim, '').trim();
+        if (!/^<!DOCTYPE/i.test(html)) {
+            // Attempt to salvage HTML fragment
+            if (/<html[\s>]/i.test(html)) {
+                html = '<!DOCTYPE html>' + html;
+            } else if (/<body[\s>]/i.test(html)) {
+                html = '<!DOCTYPE html><html lang="en">' + html + '</html>';
+            } else if (/<div|<header|<main|<section/i.test(html)) {
+                html = `<!DOCTYPE html><html lang="en"><head><meta charset='utf-8'/><title>${projectName} Draft</title><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{font-family:system-ui;margin:0;background:#0f1115;color:#e2e8f0;line-height:1.55;padding:40px 34px}h1{font-size:2.4rem;margin:0 0 1rem;background:linear-gradient(90deg,#6366f1,#8b5cf6);-webkit-background-clip:text;color:transparent}</style></head><body>${html}</body></html>`;
+            } else if (html.split(/\s+/).length < 8) {
+                return null; // too minimal
+            } else {
+                html = `<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'/><title>${projectName} Draft</title><meta name='viewport' content='width=device-width,initial-scale=1'></head><body>${html}</body></html>`;
+            }
+        }
+        // Size guard
+        if (html.length > 24000) html = html.slice(0, 23900) + '\n<!-- truncated -->';
+        if (!/\b<section\b|<main|<header/i.test(html)) return html; // already fine
+        return html;
+    } catch (e: any) {
+        console.warn('[api/chat] visual site draft generation failed', e?.message);
+        return null;
+    }
 }
 
 // Simple AI name generator (placeholder) - ensures consistent slug
@@ -180,7 +320,8 @@ function generateFiles(appName: string, prompt: string) {
 const BodySchema = z.object({
     prompt: z.string().min(3),
     projectId: z.string().optional(),
-    model: z.string().optional()
+    model: z.string().optional(),
+    phase: z.enum(['plan', 'code']).optional() // two-phase generation control
 });
 
 // Simple classification heuristic
@@ -212,15 +353,19 @@ async function classifyPrompt(prompt: string): Promise<ClassificationResult> {
 const GENERATION_CREDIT_COST = 50;
 
 export async function POST(req: NextRequest) {
+    console.log('[api/chat] entry');
     if ((authOptions as any).adapter === undefined) {
         // Return minimal placeholder so UI can still function in bypass mode
+        console.log('[api/chat] auth adapter bypass');
         return NextResponse.json({ bypassed: true, message: 'Auth bypass active' }, { status: 200 });
     }
     if (!prismaAvailable || !prisma) {
+        console.warn('[api/chat] prisma unavailable');
         return NextResponse.json({ error: 'Database unavailable' }, { status: 503 });
     }
     const session: any = await getServerSession(authOptions as any);
     if (!session?.user) {
+        console.warn('[api/chat] unauthorized');
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     const userId = session.user.id;
@@ -234,14 +379,17 @@ export async function POST(req: NextRequest) {
     const json = await req.json();
     const parse = BodySchema.safeParse(json);
     if (!parse.success) {
+        console.warn('[api/chat] invalid body');
         return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
     }
-    const { prompt, projectId, model } = parse.data;
+    const { prompt, projectId, model, phase } = parse.data;
+    console.log('[api/chat] body parsed', { promptPreview: prompt.slice(0, 120), len: prompt.length, projectId, model, phase });
 
     // Fetch user credits (derived)
     await ensureInitialGrant(userId);
     const currentBalance = await getCreditBalance(userId);
     if (currentBalance < GENERATION_CREDIT_COST) {
+        console.warn('[api/chat] insufficient credits', { balance: currentBalance });
         return NextResponse.json({ error: 'Insufficient credits' }, { status: 402 });
     }
 
@@ -251,21 +399,25 @@ export async function POST(req: NextRequest) {
     const isNew = !project;
     let previousSnapshot: any = null;
     if (!project) {
+        console.log('[api/chat] creating new project');
         const { type, confidence } = await classifyPrompt(prompt);
         const appName = deriveAppName(prompt);
         project = await prisma.project.create({ data: { userId, name: appName, type, typeConfidence: confidence } });
+        console.log('[api/chat] new project created', { projectId: project.id });
     } else if (project.lastSnapshotId) {
+        console.log('[api/chat] loading previous snapshot', { snapshotId: project.lastSnapshotId });
         previousSnapshot = await prisma.projectSnapshot.findUnique({ where: { id: project.lastSnapshotId } });
     }
     // Create routine row
     const routine = await prisma.routine.create({ data: { userId, projectId: project.id, kind: 'GENERATION', status: 'RUNNING', steps: [] } });
+    console.log('[api/chat] routine created', { routineId: routine.id });
 
     // Debit credits via ledger
     await addCreditEntry(userId, -GENERATION_CREDIT_COST, 'generation');
     const newBalance = await getCreditBalance(userId);
 
     const steps: any[] = [];
-    steps.push({ type: 'code_gen_start', ts: Date.now(), prompt });
+    steps.push({ type: 'code_gen_start', ts: Date.now(), prompt, phase: phase || 'code_default' });
 
     // DIFF CONTEXT (improved code generation placeholder)
     if (previousSnapshot) {
@@ -274,6 +426,81 @@ export async function POST(req: NextRequest) {
     }
 
     const userMessage = await prisma.chatMessage.create({ data: { userId, projectId: project.id, role: 'user', content: prompt } });
+
+    // ---------------- PLAN PHASE (fast) ----------------
+    if ((phase || 'plan') === 'plan') {
+        steps.push({ type: 'plan_phase_start', ts: Date.now() });
+        // Build diff summary context only (do not mutate code yet)
+        let diffSummary: any = null;
+        if (previousSnapshot) {
+            const prevFiles = previousSnapshot.files as any[];
+            diffSummary = { added: [], modified: [], removed: [], unchangedCount: prevFiles.length };
+        }
+        // Generate plan-only assistant reply
+        let planText = await generateAssistantReply(prompt, { diffSummary, projectId: project.id, model, planOnly: true });
+        if (!/File Plan:/i.test(planText)) {
+            planText = 'File Plan:\nCREATE preview.html – synthetic project preview\nCREATE app/page.tsx – base page shell\n\n1) Summary of intent\nInitial scaffold for: ' + prompt.slice(0, 140) + '\n2) Proposed changes / code notes\n- Add core page and preview\n3) Potential pitfalls\n- Missing real code until background phase\n4) Next TODO bullets\n- Generate code phase\n- Add components\n- Refine UI\n- Persist data\n';
+        }
+        const parsed = parsePlanSections(planText);
+        const planLines = parsed.planLines.filter(l => /^(CREATE|UPDATE|DELETE)\b/i.test(l));
+        // base files come from previous snapshot, else minimal shell
+        let files: { path: string; content: string }[] = [];
+        if (previousSnapshot) {
+            files = (previousSnapshot.files as any[]).map((f: any) => ({ path: f.path, content: f.content }));
+        } else {
+            files = generateFiles(project.name, prompt);
+        }
+        // build synthetic preview.html
+        // Try real visual site draft via model first; fallback to synthetic site mock.
+        let previewHtml = await generateVisualSiteDraft(prompt, planLines, project.name);
+        // Track which strategy produced the preview so we can analyze quality later.
+        let previewStrategyValue: string = 'visual_model';
+        if (!previewHtml) {
+            previewHtml = buildSiteMockHtml({
+                projectName: project.name,
+                prompt,
+                planLines,
+                summary: parsed.summary,
+                proposed: parsed.proposed,
+                pitfalls: parsed.pitfalls,
+                todos: parsed.todos,
+                phase: 'plan'
+            });
+            previewStrategyValue = 'visual_mock';
+            steps.push({ type: 'preview_visual_fallback', ts: Date.now() });
+        } else {
+            steps.push({ type: 'preview_visual_generated', ts: Date.now(), bytes: previewHtml.length });
+        }
+        const previewIdx = files.findIndex(f => f.path === 'preview.html');
+        if (previewIdx >= 0) files[previewIdx] = { path: 'preview.html', content: previewHtml }; else files.push({ path: 'preview.html', content: previewHtml });
+        steps.push({ type: 'plan_preview_built', ts: Date.now(), planLineCount: planLines.length });
+        const assistantMessage = await prisma.chatMessage.create({ data: { userId, projectId: project.id, role: 'assistant', content: planText } });
+        // Cast data to any to avoid transient type mismatch if Prisma types are stale in the TS language server.
+        const snapshot = await prisma.projectSnapshot.create({ data: { projectId: project.id, files, previewStrategy: previewStrategyValue } as any });
+        await prisma.project.update({ where: { id: project.id }, data: { lastSnapshotId: snapshot.id, status: 'LIVE' } });
+        steps.push({ type: 'snapshot_complete', ts: Date.now(), snapshotId: snapshot.id, phase: 'plan' });
+        // Realtime notify
+        try {
+            if (process.env.PUSHER_APP_ID && process.env.PUSHER_KEY) {
+                await pusher.trigger(`project-${project.id}`, 'files.updated', { projectId: project.id, snapshotId: snapshot.id });
+                steps.push({ type: 'realtime_emit', ts: Date.now(), channel: `project-${project.id}`, phase: 'plan' });
+            }
+        } catch (e: any) { steps.push({ type: 'realtime_error', ts: Date.now(), error: e?.message, phase: 'plan' }); }
+
+        // Mark routine success (plan phase done)
+        await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date() } });
+
+        // Kick off background code phase (non-blocking)
+        setTimeout(() => {
+            runBackgroundCodePhase({ projectId: project.id, userId, prompt, model, planLines }).catch(err => console.warn('[api/chat] background code phase error', err?.message));
+        }, 80);
+
+        // displayAssistant is just planText (already plan-only) + diff summary placeholder
+        let displayAssistant = planText.trim();
+        if (displayAssistant.length > 1600) displayAssistant = displayAssistant.slice(0, 1600) + '\n…';
+        return NextResponse.json({ projectId: project.id, projectName: project.name, projectType: project.type, typeConfidence: project.typeConfidence, deploymentUrl: null, messages: [userMessage, assistantMessage], displayAssistant, snapshotId: snapshot.id, creditsDeducted: GENERATION_CREDIT_COST, balance: newBalance, routineId: routine.id, steps, model: model || OPENAI_MODEL, fullGenerationPending: true, phase: 'plan' });
+    }
+    // ---------------- END PLAN PHASE ----------------
 
     steps.push({ type: 'snapshot_start', ts: Date.now() });
     // Generate or patch files
@@ -310,7 +537,34 @@ export async function POST(req: NextRequest) {
     }
 
     // Assistant reply (diff-aware)
-    const assistantContent = await generateAssistantReply(prompt, { diffSummary, projectId: project.id, model });
+    let assistantContent = await generateAssistantReply(prompt, { diffSummary, projectId: project.id, model });
+    console.log('[api/chat] assistant reply length', assistantContent.length);
+    const usedFallbackScaffold = /Scaffold generated while full model output was unavailable/i.test(assistantContent);
+    if (usedFallbackScaffold) steps.push({ type: 'fallback_scaffold_used', ts: Date.now() });
+
+    // Two-phase enhancement: if this is initial generation (no previous snapshot) and assistant produced no real file blocks, request a second-phase with actual file bodies.
+    if (!previousSnapshot) {
+        const planMatchEarly = assistantContent.match(/File Plan:\n([\s\S]*?)(?:\n\n[0-9]+\)|\n1\)|\n1\)|$)/i);
+        let planLinesEarly: string[] = [];
+        if (planMatchEarly) planLinesEarly = planMatchEarly[1].split('\n').map(l => l.trim()).filter(l => /^(CREATE|UPDATE|DELETE)\b/i.test(l));
+        const parsedEarly = planLinesEarly.map(l => {
+            const m = l.match(/^(CREATE|UPDATE|DELETE)\s+([^\s]+)\s*[–-]?\s*(.*)$/i); return m ? { action: m[1].toUpperCase(), path: m[2], note: m[3] } : null;
+        }).filter(Boolean) as any[];
+        const blockRegexEarly = /<file path=\"([^\"]+)\">[\r\n]*([\s\S]*?)[\r\n]*<\/file>/g;
+        const earlyBlocks: { path: string; content: string }[] = [];
+        let mb: RegExpExecArray | null;
+        while ((mb = blockRegexEarly.exec(assistantContent)) !== null) earlyBlocks.push({ path: mb[1], content: mb[2] });
+        const onlyPlaceholders = earlyBlocks.length > 0 && earlyBlocks.every(b => /placeholder|Initial placeholder/i.test(b.content));
+        const needSecondPhase = parsedEarly.length > 0 && (earlyBlocks.length === 0 || onlyPlaceholders);
+        if (needSecondPhase) {
+            console.log('[api/chat] triggering second-phase file body generation', { planCount: parsedEarly.length, earlyBlockCount: earlyBlocks.length });
+            const createFiles = parsedEarly.filter(f => f.action === 'CREATE');
+            const secondPhase = await generateFileBodiesForPlan(project.id, prompt, createFiles);
+            // Append second-phase file blocks to assistant content so downstream parser sees them.
+            assistantContent += '\n' + secondPhase;
+            steps.push({ type: 'second_phase_generated', ts: Date.now(), files: createFiles.map(f => f.path) });
+        }
+    }
     steps.push({ type: 'code_gen_complete', ts: Date.now() });
     // Parse File Plan lines before storing
     try {
@@ -324,126 +578,104 @@ export async function POST(req: NextRequest) {
             planRaw = firstLines.split(/\n(?=[0-9]+\))/)[0];
         }
         const planLines = planRaw.split('\n').map(l => l.trim()).filter(l => /^(CREATE|UPDATE|DELETE)\b/i.test(l));
+        const hasPreviewPlan = planLines.some(l => /preview\.html/i.test(l));
+        if (!hasPreviewPlan) {
+            planLines.push('UPDATE preview.html – refresh static preview');
+            assistantContent = assistantContent.replace(/(File Plan:\n[\s\S]*?)(\n\n1\)|\n1\)|$)/i, (m, a, b) => {
+                return a.trimEnd() + '\nUPDATE preview.html – refresh static preview' + (b.startsWith('\n') ? b : '\n\n1)');
+            });
+        }
         if (planLines.length) {
             const parsed = planLines.map(l => {
                 const m = l.match(/^(CREATE|UPDATE|DELETE)\s+([^\s]+)\s*[–-]?\s*(.*)$/i);
                 return m ? { action: m[1].toUpperCase(), path: m[2], note: m[3] || '' } : { raw: l };
             });
             steps.push({ type: 'file_plan', ts: Date.now(), plan: parsed });
-            // Apply plan to current in-memory files BEFORE snapshot creation so preview reflects it
+
+            // Ensure preview.html block exists if plan includes create/update for it
+            const wantsPreview = parsed.some(p => (p as any).path === 'preview.html');
+            const hasPreviewBlock = /<file path="preview\.html">[\s\S]*?<\/file>/i.test(assistantContent);
+            if (wantsPreview && !hasPreviewBlock) {
+                const pageFile = files.find(f => f.path === 'app/page.tsx');
+                const simplePreview = `<!DOCTYPE html><html><head><meta charset='utf-8'><title>Preview</title><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{font-family:system-ui;margin:0;background:#0f1115;color:#f8fafc}main{max-width:900px;margin:0 auto;padding:40px 34px;line-height:1.55}h1{font-size:2.2rem;margin:0 0 1rem;background:linear-gradient(90deg,#6366f1,#8b5cf6);-webkit-background-clip:text;color:transparent}</style></head><body><main><h1>${project.name}</h1><p>Auto-generated preview (missing model file block). Continue refining.</p><section><h2>Recent Prompt</h2><p>${prompt.replace(/</g, '&lt;').slice(0, 180)}</p></section><section><h2>Page Extract</h2><pre style='white-space:pre-wrap;font-size:12px;background:#111827;padding:12px 14px;border:1px solid #1e293b;border-radius:10px;max-height:320px;overflow:auto;'>${(pageFile?.content || '').slice(0, 1600).replace(/</g, '&lt;')}</pre></section></main></body></html>`;
+                assistantContent += `\n<file path="preview.html">\n${simplePreview}\n</file>`;
+                steps.push({ type: 'preview_auto_injected', ts: Date.now() });
+            }
+
+            // Extract explicit file blocks from assistant output
+            const blockRegex = /<file path=\"([^\"]+)\">[\r\n]*([\s\S]*?)[\r\n]*<\/file>/g;
+            const blocks: { path: string; content: string }[] = [];
+            let m: RegExpExecArray | null;
+            while ((m = blockRegex.exec(assistantContent)) !== null) {
+                blocks.push({ path: m[1].trim(), content: m[2] });
+            }
+            // Deduplicate multiple blocks per path choosing best candidate
+            if (blocks.length) {
+                const byPath = new Map<string, { path: string; content: string }[]>();
+                for (const b of blocks) {
+                    if (!byPath.has(b.path)) byPath.set(b.path, []);
+                    byPath.get(b.path)!.push(b);
+                }
+                const scored: { path: string; content: string }[] = [];
+                for (const [p, arr] of byPath.entries()) {
+                    if (arr.length === 1) { scored.push(arr[0]); continue; }
+                    let best = arr[0];
+                    const score = (c: string) => {
+                        const len = c.length;
+                        const hasCode = /(export |import |function |const |class )/.test(c) ? 400 : 0;
+                        const placeholderPenalty = /(Second-phase fallback|Placeholder created|Initial placeholder)/i.test(c) ? -300 : 0;
+                        return len + hasCode + placeholderPenalty;
+                    };
+                    for (const candidate of arr) {
+                        if (score(candidate.content) > score(best.content)) best = candidate;
+                    }
+                    if (arr.length > 1) {
+                        steps.push({ type: 'file_block_dedup', ts: Date.now(), path: p, variants: arr.length, chosenLength: best.content.length });
+                    }
+                    scored.push(best);
+                }
+                blocks.length = 0; blocks.push(...scored);
+            }
+            if (blocks.length) steps.push({ type: 'file_blocks_parsed', ts: Date.now(), count: blocks.length });
+            const blockMap = new Map(blocks.map(b => [b.path, b.content]));
+
             try {
-                const beforePaths = new Set(files.map(f => f.path));
                 const created: string[] = [];
                 const updated: string[] = [];
                 const deleted: string[] = [];
-                const ensureExists = (path: string, content: string) => {
+                const ensureCreate = (path: string, content: string) => {
                     const idx = files.findIndex(f => f.path === path);
-                    if (idx === -1) { files.push({ path, content }); created.push(path); }
+                    if (idx === -1) { files.push({ path, content }); created.push(path); } else { files[idx] = { path, content }; updated.push(path); }
                 };
-                const appendUpdate = (path: string, banner: string) => {
+                const ensureUpdate = (path: string, content: string) => {
                     const idx = files.findIndex(f => f.path === path);
-                    if (idx !== -1) { files[idx] = { path, content: files[idx].content + banner }; updated.push(path); }
-                };
-                const compStub = (name: string) => `import React from 'react';\nexport default function ${name}(){\n  return <div style={{padding:'1rem'}}>${name} component placeholder</div>;\n}`;
-                const pageStub = (title: string) => `export default function Page(){return <main style={{padding:'2rem'}}><h1>${title}</h1><p>Scaffolded page placeholder.</p></main>}`;
-                const layoutStub = `import './globals.css';\nimport React from 'react';\nexport const metadata = { title: 'Sorya App', description: 'Generated by AI' };\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (<html lang='en'><body style={{fontFamily:'system-ui,sans-serif',margin:0}}>{children}</body></html>);\n}`;
-                const globalsCss = `:root { --bg:#0b0d10; --text:#f5f5f5; --accent:#6366f1; --border:#1f2937;}\nbody { background: var(--bg); color: var(--text); margin:0; }\nbutton { font-family: inherit; }`;
-                const nowBanner = (note: string) => `\n\n// AI ${new Date().toISOString()} - ${note || 'update'}\n`;
-                const toComponentName = (filePath: string) => {
-                    const base = filePath.split('/').pop()!.replace(/\.tsx$/, '');
-                    return base.replace(/[^A-Za-z0-9]+/g, ' ').split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join('') || 'Component';
+                    if (idx !== -1) { files[idx] = { path, content }; updated.push(path); }
                 };
                 for (const p of parsed) {
                     if (!('action' in p)) continue;
                     const { action, path, note } = p as any;
                     if (action === 'CREATE') {
-                        if (path.endsWith('.tsx')) {
-                            if (path === 'app/layout.tsx') {
-                                ensureExists(path, layoutStub);
-                            } else if (path.startsWith('app/') && /page\.tsx$/.test(path)) {
-                                ensureExists(path, pageStub(project.name));
-                            } else if (path.startsWith('components/')) {
-                                ensureExists(path, compStub(toComponentName(path)));
-                            } else {
-                                ensureExists(path, `// Placeholder file for ${path}\n`);
-                            }
-                        } else if (path === 'app/globals.css') {
-                            ensureExists(path, globalsCss);
+                        if (blockMap.has(path)) {
+                            ensureCreate(path, blockMap.get(path)!);
                         } else {
-                            ensureExists(path, `// Placeholder for ${path}`);
+                            // fallback placeholder if model omitted block
+                            ensureCreate(path, `// Placeholder created (no block provided) for ${path} - ${note}`);
                         }
                     } else if (action === 'UPDATE') {
-                        appendUpdate(path, nowBanner(note));
+                        if (blockMap.has(path)) {
+                            ensureUpdate(path, blockMap.get(path)!);
+                        } else {
+                            const idx = files.findIndex(f => f.path === path);
+                            if (idx !== -1) files[idx] = { path, content: files[idx].content + `\n\n// AI update (${new Date().toISOString()}) - ${note}` };
+                            updated.push(path);
+                        }
                     } else if (action === 'DELETE') {
                         const idx = files.findIndex(f => f.path === path);
                         if (idx !== -1) { files.splice(idx, 1); deleted.push(path); }
                     }
                 }
-                // If we created layout without globals.css but plan implied design, ensure globals too
-                if (files.some(f => f.path === 'app/layout.tsx') && !files.some(f => f.path === 'app/globals.css')) {
-                    ensureExists('app/globals.css', globalsCss);
-                }
                 if (created.length || updated.length || deleted.length) {
                     steps.push({ type: 'file_plan_applied', ts: Date.now(), created, updated, deleted });
-                }
-
-                // Heuristic hydration: wire common components into layout/page for immediate preview
-                try {
-                    const getFile = (p: string) => files.find(f => f.path === p);
-                    const ensureUpdate = (p: string, mutate: (c: string) => string) => {
-                        const idx = files.findIndex(f => f.path === p);
-                        if (idx !== -1) {
-                            const before = files[idx].content;
-                            const after = mutate(before);
-                            if (after !== before) { files[idx] = { path: p, content: after }; updated.push(p); }
-                        }
-                    };
-                    const createdSet = new Set(created);
-                    const has = (p: string) => files.some(f => f.path === p);
-                    // If layout + Header/Footer created, inject them
-                    if (has('app/layout.tsx')) {
-                        ensureUpdate('app/layout.tsx', c => {
-                            let code = c;
-                            if (createdSet.has('components/Header.tsx') && !/Header\b/.test(code)) {
-                                code = `import Header from '../components/Header';\n` + code;
-                                code = code.replace(/<body[^>]*>/, m => `${m}\n<Header />`);
-                            }
-                            if (createdSet.has('components/Footer.tsx') && !/Footer\b/.test(code)) {
-                                code = `import Footer from '../components/Footer';\n` + code;
-                                code = code.replace(/<\/body>/, `<Footer />\n</body>`);
-                            }
-                            return code;
-                        });
-                    }
-                    // If page and Hero exists, place Hero at top
-                    if (has('app/page.tsx') && createdSet.has('components/Hero.tsx')) {
-                        ensureUpdate('app/page.tsx', c => {
-                            if (!/Hero\b/.test(c)) {
-                                return `import Hero from '../components/Hero';\n` + c.replace(/return\s*<([A-Za-z]+)/, match => `return <>\n  <Hero />\n  <${match.split('return ')[1]}`) // fallback naive
-                                    .replace(/return\s*\(/, 'return (<>\n  <Hero />')
-                                    .replace(/export default function Page\(.*?\){/, m => m + `\n// Injected Hero component`)
-                                    .replace(/\n}\s*$/, '\n</>\n}');
-                            }
-                            return c;
-                        });
-                    }
-                    // If ProjectCard exists, ensure a simple list on page
-                    if (has('app/page.tsx') && createdSet.has('components/ProjectCard.tsx')) {
-                        ensureUpdate('app/page.tsx', c => {
-                            if (!/ProjectCard\b/.test(c)) {
-                                const sampleBlock = `\n  <section style={{display:'grid',gap:'1rem',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',marginTop:'2rem'}}>{[1,2,3].map(i=> <ProjectCard key={i} />)}</section>`;
-                                let code = `import ProjectCard from '../components/ProjectCard';\n` + c;
-                                code = code.replace(/<Hero\s*\/>/, m => m + sampleBlock);
-                                if (!/ProjectCard key/.test(code)) {
-                                    code = code.replace(/return\s*<[^>]+>/, match => match + sampleBlock).replace(/return\s*\(\s*<[^>]+>/, match => match + sampleBlock);
-                                }
-                                return code;
-                            }
-                            return c;
-                        });
-                    }
-                } catch (e: any) {
-                    steps.push({ type: 'hydration_error', ts: Date.now(), error: e?.message });
                 }
             } catch (e: any) {
                 steps.push({ type: 'file_plan_apply_error', ts: Date.now(), error: e?.message });
@@ -455,6 +687,8 @@ export async function POST(req: NextRequest) {
     const assistantMessage = await prisma.chatMessage.create({ data: { userId, projectId: project.id, role: 'assistant', content: assistantContent } });
 
     const snapshot = await prisma.projectSnapshot.create({ data: { projectId: project.id, files } });
+    console.log('[api/chat] snapshot created', { snapshotId: snapshot.id, fileCount: files.length });
+    try { console.log('[api/chat] snapshot file list', files.map(f => ({ path: f.path, len: (f.content || '').length })).slice(0, 40)); } catch { }
     steps.push({ type: 'snapshot_complete', ts: Date.now(), snapshotId: snapshot.id });
 
     // Realtime notify (best-effort)
@@ -469,11 +703,18 @@ export async function POST(req: NextRequest) {
         steps.push({ type: 'realtime_error', ts: Date.now(), error: e?.message });
     }
 
-    // Deployment routine steps (mock for now)
-    steps.push({ type: 'deploy_start', ts: Date.now(), target: 'mock_vercel' });
-    const deploymentUrl = `https://preview.sorya.dev/p/${project.id}`;
-    await prisma.project.update({ where: { id: project.id }, data: { deploymentUrl, lastSnapshotId: snapshot.id, status: 'LIVE' } });
-    steps.push({ type: 'deploy_result', ts: Date.now(), url: deploymentUrl, state: 'LIVE', mode: 'mock' });
+    // Deployment disabled (preview-only mode)
+    const deploymentUrl = null;
+    await prisma.project.update({ where: { id: project.id }, data: { lastSnapshotId: snapshot.id, status: 'LIVE' } });
+    steps.push({ type: 'deploy_skipped', ts: Date.now(), reason: 'preview_only_mode' });
+    // Immediate verification read-back (debugging missing lastSnapshotId issue)
+    try {
+        const verify = await prisma.project.findUnique({ where: { id: project.id }, select: { lastSnapshotId: true, status: true } });
+        console.log('[api/chat] verify after update', { projectId: project.id, lastSnapshotId: verify?.lastSnapshotId, status: verify?.status });
+        steps.push({ type: 'post_update_verify', ts: Date.now(), lastSnapshotId: verify?.lastSnapshotId });
+    } catch (e: any) {
+        console.warn('[api/chat] verify query failed', e?.message);
+    }
 
     if (patchApplied && !isNew) {
         steps.push({ type: 'patch_apply', ts: Date.now(), changedFiles: diffSummary.modified, addedFiles: diffSummary.added });
@@ -492,9 +733,101 @@ export async function POST(req: NextRequest) {
     }
 
     await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date() } });
+    console.log('[api/chat] routine completed', { routineId: routine.id });
     maybeSummarize(project.id).catch(() => { });
 
-    return NextResponse.json({ projectId: project.id, projectName: project.name, projectType: project.type, typeConfidence: project.typeConfidence, deploymentUrl, messages: [userMessage, assistantMessage], snapshotId: snapshot.id, creditsDeducted: GENERATION_CREDIT_COST, balance: newBalance, routineId: routine.id, steps, model: model || OPENAI_MODEL });
+    // Build a display-only assistant summary for UI (strip file blocks & trim) and append diff summary
+    let displayAssistant = assistantContent;
+    try {
+        displayAssistant = displayAssistant.replace(/<file path="[^"]+">[\s\S]*?<\/file>/g, '').trim();
+        const parts = displayAssistant.split(/\n{2,}/);
+        if (parts.length > 0) {
+            displayAssistant = parts.filter(p => p.length < 1500).join('\n\n');
+        }
+        // Derive file change summary from steps or initial snapshot
+        let created: string[] = []; let updated: string[] = []; let deleted: string[] = [];
+        const planApplied = [...steps].reverse().find(s => s.type === 'file_plan_applied');
+        if (planApplied) {
+            created = planApplied.created || [];
+            updated = planApplied.updated || [];
+            deleted = planApplied.deleted || [];
+        } else if (!previousSnapshot) {
+            created = files.map(f => f.path);
+        }
+        if (created.length || updated.length || deleted.length) {
+            const lineCount = (p: string) => { try { const f = files.find(f => f.path === p); return f ? (f.content.split(/\n/).length) : 0; } catch { return 0; } };
+            const fmtList = (arr: string[], prefix: string) => arr.slice(0, 10).map(p => `${prefix}${p}${lineCount(p) ? ' (' + lineCount(p) + 'l)' : ''}`).join(', ') + (arr.length > 10 ? `, +${arr.length - 10} more` : '');
+            const diffLines: string[] = [];
+            diffLines.push('---');
+            diffLines.push('Diff Summary:');
+            if (created.length) diffLines.push('Created: ' + fmtList(created, '+'));
+            if (updated.length) diffLines.push('Updated: ' + fmtList(updated, '∆'));
+            if (deleted.length) diffLines.push('Deleted: ' + fmtList(deleted, '−'));
+            const diffBlock = diffLines.join('\n');
+            displayAssistant = displayAssistant + '\n\n' + diffBlock;
+        }
+        if (displayAssistant.length > 1600) displayAssistant = displayAssistant.slice(0, 1600) + '\n…';
+    } catch { }
+    return NextResponse.json({ projectId: project.id, projectName: project.name, projectType: project.type, typeConfidence: project.typeConfidence, deploymentUrl, messages: [userMessage, assistantMessage], displayAssistant, snapshotId: snapshot.id, creditsDeducted: GENERATION_CREDIT_COST, balance: newBalance, routineId: routine.id, steps, model: model || OPENAI_MODEL });
+}
+
+// Background code phase executor (invoked after plan snapshot)
+async function runBackgroundCodePhase(args: { projectId: string; userId: string; prompt: string; model?: string; planLines?: string[] }) {
+    const { projectId, userId, prompt, model } = args;
+    if (!prismaAvailable || !prisma) return;
+    try {
+        const project = await prisma.project.findUnique({ where: { id: projectId } });
+        if (!project) return;
+        const previousSnapshot = project.lastSnapshotId ? await prisma.projectSnapshot.findUnique({ where: { id: project.lastSnapshotId } }) : null;
+        const routine = await prisma.routine.create({ data: { userId, projectId, kind: 'BACKGROUND_CODE', status: 'RUNNING', steps: [] } });
+        const steps: any[] = [{ type: 'background_code_start', ts: Date.now() }];
+        let diffSummary: any = null;
+        if (previousSnapshot) {
+            const prevFiles = previousSnapshot.files as any[];
+            steps.push({ type: 'diff_context_prepare', ts: Date.now(), previousSnapshotId: previousSnapshot.id, prevFileCount: prevFiles.length });
+        }
+        // For background phase treat previous snapshot as base
+        let files: { path: string; content: string }[] = [];
+        if (previousSnapshot) files = (previousSnapshot.files as any[]).map((f: any) => ({ path: f.path, content: f.content }));
+        else files = generateFiles(project.name, prompt);
+        let assistantContent = await generateAssistantReply(prompt, { diffSummary, projectId, model, planOnly: false });
+        // Reuse existing parsing logic by lightly duplicating critical parts (reduced for brevity)
+        try {
+            const planSectionMatch = assistantContent.match(/File Plan:\n([\s\S]*?)(?:\n\n[0-9]+\)|\n1\)|\n1\)|$)/i);
+            let planRaw = planSectionMatch ? planSectionMatch[1].trim() : '';
+            const planLines = planRaw.split('\n').map(l => l.trim()).filter(l => /^(CREATE|UPDATE|DELETE)\b/i.test(l));
+            const parsed = planLines.map(l => { const m = l.match(/^(CREATE|UPDATE|DELETE)\s+([^\s]+)\s*[–-]?\s*(.*)$/i); return m ? { action: m[1].toUpperCase(), path: m[2], note: m[3] || '' } : null; }).filter(Boolean) as any[];
+            const blockRegex = /<file path=\"([^\"]+)\">[\r\n]*([\s\S]*?)[\r\n]*<\/file>/g;
+            const blocks: { path: string; content: string }[] = []; let m: RegExpExecArray | null;
+            while ((m = blockRegex.exec(assistantContent)) !== null) blocks.push({ path: m[1], content: m[2] });
+            const blockMap = new Map(blocks.map(b => [b.path, b.content]));
+            const created: string[] = []; const updated: string[] = [];
+            const ensureCreate = (path: string, content: string) => { const idx = files.findIndex(f => f.path === path); if (idx === -1) { files.push({ path, content }); created.push(path); } else { files[idx] = { path, content }; updated.push(path); } };
+            const ensureUpdate = (path: string, content: string) => { const idx = files.findIndex(f => f.path === path); if (idx !== -1) { files[idx] = { path, content }; updated.push(path); } };
+            for (const p of parsed) {
+                const { action, path, note } = p as any;
+                if (action === 'CREATE') ensureCreate(path, blockMap.get(path) || `// Placeholder (missing block) for ${path} - ${note}`);
+                else if (action === 'UPDATE') ensureUpdate(path, blockMap.get(path) || (files.find(f => f.path === path)?.content + `\n// AI update (${new Date().toISOString()}) - ${note}` || `// Update placeholder for ${path}`));
+            }
+            // Always update preview.html synthetic to code phase
+            const parsedSections = parsePlanSections(assistantContent);
+            const previewHtml = buildPreviewHtml({ projectName: project.name, prompt, planLines: parsedSections.planLines, summary: parsedSections.summary, proposed: parsedSections.proposed, pitfalls: parsedSections.pitfalls, todos: parsedSections.todos, phase: 'code' });
+            const previewIdx = files.findIndex(f => f.path === 'preview.html');
+            if (previewIdx >= 0) files[previewIdx] = { path: 'preview.html', content: previewHtml }; else files.push({ path: 'preview.html', content: previewHtml });
+            steps.push({ type: 'background_files_applied', ts: Date.now(), created, updated });
+        } catch (e: any) {
+            steps.push({ type: 'background_parse_error', ts: Date.now(), error: e?.message });
+        }
+        const assistantMessage = await prisma.chatMessage.create({ data: { userId, projectId, role: 'assistant', content: assistantContent } });
+        const snapshot = await prisma.projectSnapshot.create({ data: { projectId, files } });
+        await prisma.project.update({ where: { id: projectId }, data: { lastSnapshotId: snapshot.id, status: 'LIVE' } });
+        try { if (process.env.PUSHER_APP_ID && process.env.PUSHER_KEY) await pusher.trigger(`project-${projectId}`, 'files.updated', { projectId, snapshotId: snapshot.id }); } catch { }
+        steps.push({ type: 'background_snapshot_complete', ts: Date.now(), snapshotId: snapshot.id });
+        await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date() } });
+        maybeSummarize(projectId).catch(() => { });
+    } catch (e: any) {
+        try { await prisma.routine.create({ data: { userId, projectId, kind: 'BACKGROUND_CODE_ERROR', status: 'ERROR', steps: [{ type: 'background_error', error: e?.message, ts: Date.now() }] } }); } catch { }
+    }
 }
 
 // Conversation memory helpers (moved above generateAssistantReply)

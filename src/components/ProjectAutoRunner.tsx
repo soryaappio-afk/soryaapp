@@ -13,6 +13,7 @@ export default function ProjectAutoRunner({ projectId }: Props) {
         let data: any = null;
         try { const raw = localStorage.getItem('sorya:auto-gen'); if (raw) data = JSON.parse(raw); } catch { }
         if (!data || data.projectId !== projectId) return;
+        console.log('[ProjectAutoRunner] auto-gen flag detected', data);
         // Remove flag so it doesn't re-run later
         localStorage.removeItem('sorya:auto-gen');
         const userPrompt = data.prompt as string;
@@ -20,18 +21,27 @@ export default function ProjectAutoRunner({ projectId }: Props) {
         setProgress('Generating...');
         (async () => {
             try {
+                console.log('[ProjectAutoRunner] calling /api/chat', { projectId, promptPreview: userPrompt.slice(0, 140) });
                 const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: userPrompt, projectId }) });
+                console.log('[ProjectAutoRunner] /api/chat response', { status: res.status });
                 if (!res.ok) {
                     const d = await res.json().catch(() => ({}));
+                    console.warn('[ProjectAutoRunner] generation failed', { status: res.status, body: d });
                     setError(d.error || 'Generation failed');
                     setProgress('Failed');
                     setRunning(false);
                     return;
                 }
+                const body = await res.json().catch(() => null);
+                console.log('[ProjectAutoRunner] generation success', { snapshotId: body?.snapshotId, routineId: body?.routineId });
+                if (body?.snapshotId) {
+                    try { window.dispatchEvent(new CustomEvent('sorya:snapshot-updated', { detail: { projectId, snapshotId: body.snapshotId } })); } catch { }
+                }
                 // success - the project page will refetch on next navigation or user interaction; optionally we could force reload.
                 setProgress('Completed');
                 setTimeout(() => setRunning(false), 2000);
             } catch (e: any) {
+                console.error('[ProjectAutoRunner] generation error', e?.message);
                 setError('Generation failed');
                 setProgress('Failed');
                 setRunning(false);

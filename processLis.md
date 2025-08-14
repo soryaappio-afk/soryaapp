@@ -132,6 +132,10 @@ Order is optimized to always have a runnable app even if later steps slip.
 - Multi-tenant teams & roles.
 - Multi-step agent roles (planner → implementer → tester).
 - Additional deployment targets (Render, Fly.io, AWS Amplify).
+ - Environment variable suggestions & secret manager UI.
+ - Rich diff visualizations per routine step.
+ - Additional project type taxonomy & confidence scoring.
+ - Routines audit trail + deployment history UI.
 
 ## 4. Risks & Mitigations
 | Risk | Impact | Mitigation |

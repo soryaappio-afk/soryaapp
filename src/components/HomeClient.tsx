@@ -121,24 +121,30 @@ export default function HomeClient({ session, projects, credits }: Props) {
         setWasAborted(false);
         const currentPrompt = prompt;
         try {
+            console.log('[HomeClient] sendPrompt:start', { prompt: currentPrompt.slice(0, 140), len: currentPrompt.length });
             // 1. Fast init project
             const initRes = await fetch('/api/projects/init', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: currentPrompt }) });
+            console.log('[HomeClient] sendPrompt:initResponse', { status: initRes.status });
             if (!initRes.ok) {
                 if (initRes.status === 401) { setShowAuthModal(true); } else { const d = await initRes.json().catch(() => ({})); setError(d.error || 'Init failed'); }
                 setLoading(false);
+                console.warn('[HomeClient] sendPrompt:initFailed', { status: initRes.status });
                 return;
             }
             const initData = await initRes.json();
+            console.log('[HomeClient] sendPrompt:initData', initData);
             const pid = initData.projectId;
             // Mark that generation should start automatically after redirect
             if (pid) {
                 try { localStorage.setItem('sorya:auto-gen', JSON.stringify({ projectId: pid, prompt: currentPrompt, ts: Date.now() })); } catch { }
+                console.log('[HomeClient] sendPrompt:redirecting', { projectId: pid });
                 // Immediate redirect
                 window.location.href = `/projects/${pid}`;
             }
         } catch (e: any) {
             setError('Init failed');
             setLoading(false);
+            console.error('[HomeClient] sendPrompt:error', e?.message);
         }
     }
 

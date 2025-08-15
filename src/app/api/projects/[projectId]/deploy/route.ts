@@ -16,6 +16,27 @@ function parseFirstError(log: string): string | null {
     return errLine || null;
 }
 
+function buildPatchFromError(errorLine: string | null, projectName: string, attempt: number) {
+    const suggestions: string[] = [];
+    if (errorLine) {
+        if (/next\/config|next\.config/i.test(errorLine)) {
+            suggestions.push('Add basic next.config.js to satisfy import.');
+        }
+        if (/module not found/i.test(errorLine)) {
+            suggestions.push('Add placeholder module export to avoid build break.');
+        }
+    }
+    if (suggestions.length === 0) suggestions.push('General patch: add diagnostic comment.');
+    return {
+        note: suggestions.join(' '),
+        genFile: /next\/config|next\.config/i.test(errorLine || '') ? {
+            path: 'next.config.js',
+            content: `// Auto-generated patch attempt ${attempt}\nmodule.exports = { reactStrictMode: true };\n`
+        } : null,
+        banner: `\n\n// Patch attempt ${attempt} for ${projectName}: ${errorLine || 'no specific error parsed'} -> ${suggestions.join(' ')}`
+    };
+}
+
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest, { params }: { params: { projectId: string } }) {
@@ -50,6 +71,7 @@ export async function POST(req: NextRequest, { params }: { params: { projectId: 
     let finalState: string = 'PENDING';
     let deploymentUrl: string | undefined;
     let attempt = 0;
+    const realMode = !!process.env.VERCEL_TOKEN; // if we have token we avoid forced mock failure
 
     while (attempt < MAX_FIX_ATTEMPTS) {
         attempt += 1;
@@ -59,9 +81,9 @@ export async function POST(req: NextRequest, { params }: { params: { projectId: 
         const latestSnapshot = project.lastSnapshotId ? await prisma.projectSnapshot.findUnique({ where: { id: project.lastSnapshotId } }) : null;
         const files = (latestSnapshot?.files as any[]) || [];
 
-        // Simulate one failure on first attempt (mock scenario)
+        // Simulate failure only in mock mode (first attempt) to exercise loop
         let mockError = false;
-        if (attempt === 1) mockError = true; // force first attempt failure to exercise loop
+        if (!realMode && attempt === 1) mockError = true;
 
         // Ensure (mock) project and create (mock) deployment
         await ensureVercelProject(project.id, project.name);
@@ -74,7 +96,7 @@ export async function POST(req: NextRequest, { params }: { params: { projectId: 
             const vercelDep = await createDeployment(project.id, files);
             depState = vercelDep.state;
             deploymentUrl = vercelDep.url;
-            buildLog = 'Build succeeded';
+            buildLog = depState === 'READY' ? 'Build succeeded' : `Deployment state: ${vercelDep.state}`;
         }
 
         const deployment = await prisma.deployment.create({ data: { projectId, state: depState === 'READY' ? 'READY' : 'ERROR', attempt, buildLogExcerpt: buildLog.slice(0, 240), url: deploymentUrl } });
@@ -92,16 +114,28 @@ export async function POST(req: NextRequest, { params }: { params: { projectId: 
                 finalState = 'ERROR';
                 break;
             }
-            // Apply simple patch to try fix (append comment to app/page.tsx)
             if (latestSnapshot) {
+                const patch = buildPatchFromError(parsed, project.name, attempt);
+                steps.push({ type: 'patch_suggest', attempt, ts: Date.now(), parsedError: parsed, suggestion: patch.note });
                 const filesArr = [...files].map(f => ({ path: f.path, content: f.content }));
                 const idx = filesArr.findIndex(f => f.path === 'app/page.tsx');
-                const fixBanner = `\n\n// Automated fix attempt ${attempt} at ${new Date().toISOString()} addressing: ${parsed || 'unknown error'}`;
-                if (idx >= 0) filesArr[idx] = { path: 'app/page.tsx', content: filesArr[idx].content + fixBanner + '\n// TODO: implement real fix' };
-                else filesArr.push({ path: 'app/page.tsx', content: `export default function GeneratedPage(){return <div>Patched attempt for ${project.name}</div>}` });
+                if (idx >= 0) filesArr[idx] = { path: 'app/page.tsx', content: filesArr[idx].content + patch.banner };
+                else filesArr.push({ path: 'app/page.tsx', content: `export default function GeneratedPage(){return <div>Initial patch page for ${project.name}</div>}` + patch.banner });
+                if (patch.genFile && !filesArr.some((f: any) => f.path === (patch.genFile as any).path)) filesArr.push(patch.genFile as any);
                 const newSnapshot = await prisma.projectSnapshot.create({ data: { projectId: project.id, files: filesArr } });
                 await prisma.project.update({ where: { id: project.id }, data: { lastSnapshotId: newSnapshot.id } });
-                steps.push({ type: 'patch_apply', attempt, ts: Date.now(), snapshotId: newSnapshot.id, note: 'Mock fix patch appended.' });
+                // Snapshot retention: keep most recent 4 snapshots (latest + previous 3), delete older
+                try {
+                    const snaps = await prisma.projectSnapshot.findMany({ where: { projectId: project.id }, select: { id: true, createdAt: true }, orderBy: { createdAt: 'desc' } });
+                    if (snaps.length > 4) {
+                        const toDelete = snaps.slice(4).map(s => s.id);
+                        await prisma.projectSnapshot.deleteMany({ where: { id: { in: toDelete } } });
+                        steps.push({ type: 'snapshot_prune', ts: Date.now(), removed: toDelete.length });
+                    }
+                } catch (e: any) {
+                    steps.push({ type: 'snapshot_prune_error', ts: Date.now(), error: e.message?.slice(0, 160) });
+                }
+                steps.push({ type: 'patch_apply', attempt, ts: Date.now(), snapshotId: newSnapshot.id, note: patch.note });
             }
         }
     }

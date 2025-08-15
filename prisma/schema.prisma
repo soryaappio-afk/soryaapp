@@ -73,6 +73,8 @@ model Project {
   name           String
   status         String            @default("NEW")
   deploymentUrl  String?
+  vercelProjectId   String? // real Vercel project id (when created)
+  vercelProjectSlug String? // cached slug for naming consistency
   type           String? // classification later
   typeConfidence Float?
   typeManualOverride Boolean @default(false)
@@ -106,6 +108,7 @@ model ProjectSnapshot {
   projectId String
   summary   String?
   previewStrategy String?
+  planMeta  Json?
   files     Json
   createdAt DateTime @default(now())
 }
@@ -134,6 +137,9 @@ model Routine {
   kind             String       @default("GENERATION")
   status           String       @default("RUNNING") // RUNNING | SUCCESS | ERROR
   steps            Json         @default("[]")
+  createdFiles     Json?        // array of file paths created in this routine
+  updatedFiles     Json?        // array of file paths updated in this routine
+  deletedFiles     Json?        // array of file paths deleted in this routine
   startedAt        DateTime     @default(now())
   finishedAt       DateTime?
   createdAt        DateTime     @default(now())

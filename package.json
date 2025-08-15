@@ -4,11 +4,12 @@
     "version": "0.1.0",
     "scripts": {
         "dev": "next dev",
-    "build": "npm run prisma:generate && npm run prisma:deploy && next build",
+        "build": "npm run prisma:generate && npm run prisma:deploy && next build",
         "start": "next start",
         "prisma:migrate": "prisma migrate dev",
         "prisma:generate": "prisma generate",
-        "prisma:deploy": "prisma migrate deploy"
+        "prisma:deploy": "prisma migrate deploy",
+        "test": "vitest run"
     },
     "dependencies": {
         "@emotion/react": "^11.14.0",
@@ -33,6 +34,7 @@
         "@types/react": "18.2.73",
         "@types/react-dom": "18.2.23",
         "prisma": "5.14.0",
-        "typescript": "5.4.5"
+        "typescript": "5.4.5",
+        "vitest": "1.6.0"
     }
 }

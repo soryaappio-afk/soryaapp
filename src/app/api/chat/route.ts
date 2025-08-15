@@ -5,7 +5,10 @@ import { z } from 'zod';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/src/lib/auth';
 import { ensureRepo, pushSnapshot } from '@/src/lib/github';
+import { ensureCoreFiles } from '@/src/lib/coreFiles';
+import { applyEnrichmentCreateLimit } from '@/src/lib/enrich';
 import { pusher } from '@/src/lib/realtime';
+import { runDeploymentRoutine } from '@/lib/deploy';
 import { addCreditEntry, getCreditBalance, ensureInitialGrant } from '@/src/lib/credits';
 import OpenAI from 'openai';
 
@@ -17,8 +20,8 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
 // Real OpenAI call (with fallback to placeholder if error or missing key)
-async function generateAssistantReply(prompt: string, opts: { diffSummary?: any; projectId: string; model?: string; planOnly?: boolean }) {
-    const { diffSummary, projectId, model, planOnly } = opts;
+async function generateAssistantReply(prompt: string, opts: { diffSummary?: any; projectId: string; model?: string; planOnly?: boolean; enrichMode?: boolean }) {
+    const { diffSummary, projectId, model, planOnly, enrichMode } = opts;
     const chosenModel = model || OPENAI_MODEL;
     const forceGpt5 = true; // always try gpt-5 first per requirement
     const primaryModel = forceGpt5 ? 'gpt-5-2025-08-07' : chosenModel;
@@ -61,6 +64,10 @@ async function generateAssistantReply(prompt: string, opts: { diffSummary?: any;
         'After the numbered sections, output concrete file contents for every CREATE or UPDATE using EXACT XML-ish blocks so the backend can parse them. Use this format strictly: <file path="app/page.tsx">\n<full file content here>\n</file> . One block per file. Skip unchanged files. Do NOT wrap inside markdown fences. No extra commentary inside the block.',
         `Structure every answer EXACTLY as:\nFile Plan:\n<lines>\n\n1) Summary of intent\n2) Proposed changes / code notes\n3) Potential pitfalls\n4) Next TODO bullets (<=6)\n\n<file path="...">\n...\n</file> (zero or more blocks)\nReturn plain text only. Keep total under 420 tokens unless user asks for more. Return all sections even if brief. Avoid adding extra sections beyond the file blocks.`
     ];
+    systemCore.push('MANDATORY VALIDATION: For every CREATE line you MUST include a matching <file path="..."> block with substantive (non-placeholder) content in the SAME response (except when in plan-only mode). For every UPDATE preview.html you must output the preview.html block again. If you cannot fully implement a file keep a minimal but production-valid skeleton (no placeholders like TODO or Placeholder). If required core blocks (app/page.tsx, preview.html) would be missing you must REVISE internally before responding.');
+    if (enrichMode) {
+        systemCore.push('ENRICH MODE ACTIVE: Focus on incremental high-value enhancements: add up to 3 new focused components, modest styling improvements, light routing additions (<=2 new pages), and small state or interaction improvements. Avoid large rewrites or deleting core files. Surface NEXT TODOs reflecting further enrichment opportunities.');
+    }
     if (planOnly) {
         systemCore.push('OVERRIDE CURRENT INSTRUCTIONS: This is a PLAN-ONLY phase. Return ONLY the File Plan lines and the numbered sections 1-4. DO NOT include any <file path="..."> code blocks or other code. Keep under 300 tokens, concise and actionable.');
     }
@@ -308,6 +315,7 @@ function toRepoSlug(name: string) {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'app';
 }
 
+
 // Code generator using derived name
 function generateFiles(appName: string, prompt: string) {
     const page = `export default function GeneratedPage(){return <div style={{padding:'2rem'}}><h1>${appName}</h1><p>${prompt}</p></div>}`;
@@ -321,7 +329,7 @@ const BodySchema = z.object({
     prompt: z.string().min(3),
     projectId: z.string().optional(),
     model: z.string().optional(),
-    phase: z.enum(['plan', 'code']).optional() // two-phase generation control
+    phase: z.enum(['plan', 'code', 'enrich']).optional() // extended phases (plan-only, code default, enrichment)
 });
 
 // Simple classification heuristic
@@ -476,7 +484,7 @@ export async function POST(req: NextRequest) {
         steps.push({ type: 'plan_preview_built', ts: Date.now(), planLineCount: planLines.length });
         const assistantMessage = await prisma.chatMessage.create({ data: { userId, projectId: project.id, role: 'assistant', content: planText } });
         // Cast data to any to avoid transient type mismatch if Prisma types are stale in the TS language server.
-        const snapshot = await prisma.projectSnapshot.create({ data: { projectId: project.id, files, previewStrategy: previewStrategyValue } as any });
+        const snapshot = await prisma.projectSnapshot.create({ data: { projectId: project.id, files, previewStrategy: previewStrategyValue, planMeta: { planLines, summary: parsed.summary, proposed: parsed.proposed, pitfalls: parsed.pitfalls, todos: parsed.todos } } as any });
         await prisma.project.update({ where: { id: project.id }, data: { lastSnapshotId: snapshot.id, status: 'LIVE' } });
         steps.push({ type: 'snapshot_complete', ts: Date.now(), snapshotId: snapshot.id, phase: 'plan' });
         // Realtime notify
@@ -537,8 +545,42 @@ export async function POST(req: NextRequest) {
     }
 
     // Assistant reply (diff-aware)
-    let assistantContent = await generateAssistantReply(prompt, { diffSummary, projectId: project.id, model });
+    const enrichMode = phase === 'enrich';
+    let assistantContent: string;
+    // --- Multi-agent planner -> implementer (optional) ---
+    if (!enrichMode && process.env.MULTI_AGENT_ENABLED === 'true') {
+        steps.push({ type: 'planner_start', ts: Date.now() });
+        const plannerOut = await generateAssistantReply(prompt, { diffSummary, projectId: project.id, model, planOnly: true });
+        const plannerParsed = parsePlanSections(plannerOut || '');
+        steps.push({ type: 'planner_complete', ts: Date.now(), planLineCount: plannerParsed.planLines.length });
+        const implementerPrompt = prompt + '\n\n(Planned File Plan)\n' + plannerParsed.planLines.join('\n');
+        steps.push({ type: 'implementer_start', ts: Date.now() });
+        assistantContent = await generateAssistantReply(implementerPrompt, { diffSummary, projectId: project.id, model, enrichMode: false });
+        steps.push({ type: 'implementer_complete', ts: Date.now(), contentLength: assistantContent.length });
+    } else {
+        assistantContent = await generateAssistantReply(prompt, { diffSummary, projectId: project.id, model, enrichMode });
+    }
     console.log('[api/chat] assistant reply length', assistantContent.length);
+    // Core block enforcement (pre-parse) – inject skeletons if model failed
+    if (!/plan/i.test(phase || '') && !/File Plan:/i.test(assistantContent)) {
+        // Extremely malformed; prepend a minimal valid scaffold structure
+        assistantContent = 'File Plan:\nCREATE app/page.tsx – Core page shell\nUPDATE preview.html – Refresh preview\n\n1) Summary of intent\nRecovered from malformed output.\n2) Proposed changes / code notes\n- Injected minimal core files.\n3) Potential pitfalls\n- Model formatting failure.\n4) Next TODO bullets\n- Refine generation\n- Add components\n\n<file path="app/page.tsx">export default function GeneratedPage(){return <div style={{padding:\'2rem\'}}><h1>Recovered</h1><p>Auto scaffold.</p></div>}</file>\n<file path="preview.html"><!DOCTYPE html><html><head><meta charset=\'utf-8\'><title>Preview</title></head><body><main><h1>Recovered Preview</h1><p>Auto scaffold.</p></main></body></html></file>';
+        steps.push({ type: 'core_blocks_injected', ts: Date.now(), reason: 'missing_file_plan' });
+    }
+    const missingCoreBlocks: string[] = [];
+    if (!/<file path="app\/page\.tsx">[\s\S]*?<\/file>/i.test(assistantContent)) missingCoreBlocks.push('app/page.tsx');
+    if (!/<file path="preview\.html">[\s\S]*?<\/file>/i.test(assistantContent)) missingCoreBlocks.push('preview.html');
+    if (missingCoreBlocks.length) {
+        const injected: string[] = [];
+        if (missingCoreBlocks.includes('app/page.tsx')) {
+            injected.push('<file path="app/page.tsx">export default function GeneratedPage(){return <main style={{padding:\'2rem\',fontFamily:\'system-ui\'}}><h1 style={{margin:0,fontSize:\'2rem\'}}>Core Page</h1><p>Injected core shell (model omitted).</p></main>}</file>');
+        }
+        if (missingCoreBlocks.includes('preview.html')) {
+            injected.push('<file path="preview.html"><!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/><title>Preview</title><meta name="viewport" content="width=device-width,initial-scale=1"/><style>body{margin:0;font-family:system-ui;background:#0f1115;color:#e2e8f0;padding:40px 34px}h1{font-size:2rem;margin:0 0 1rem;background:linear-gradient(90deg,#6366f1,#8b5cf6);-webkit-background-clip:text;color:transparent}</style></head><body><main><h1>Preview Missing Block Injected</h1><p>Model omitted preview.html; auto-injected.</p></main></body></html></file>');
+        }
+        assistantContent += '\n' + injected.join('\n');
+        steps.push({ type: 'core_blocks_injected', ts: Date.now(), reason: 'missing_core_blocks', blocks: missingCoreBlocks });
+    }
     const usedFallbackScaffold = /Scaffold generated while full model output was unavailable/i.test(assistantContent);
     if (usedFallbackScaffold) steps.push({ type: 'fallback_scaffold_used', ts: Date.now() });
 
@@ -586,11 +628,19 @@ export async function POST(req: NextRequest) {
             });
         }
         if (planLines.length) {
-            const parsed = planLines.map(l => {
+            let parsed = planLines.map(l => {
                 const m = l.match(/^(CREATE|UPDATE|DELETE)\s+([^\s]+)\s*[–-]?\s*(.*)$/i);
                 return m ? { action: m[1].toUpperCase(), path: m[2], note: m[3] || '' } : { raw: l };
             });
             steps.push({ type: 'file_plan', ts: Date.now(), plan: parsed });
+
+            // Enrichment guard via helper
+            if (enrichMode) {
+                const before = parsed as any[];
+                const { plan: limited, removedCreates } = applyEnrichmentCreateLimit(before as any[], 3);
+                if (removedCreates.length) steps.push({ type: 'enrich_limit_applied', ts: Date.now(), removedCreates });
+                parsed = limited as any;
+            }
 
             // Ensure preview.html block exists if plan includes create/update for it
             const wantsPreview = parsed.some(p => (p as any).path === 'preview.html');
@@ -639,6 +689,31 @@ export async function POST(req: NextRequest) {
             if (blocks.length) steps.push({ type: 'file_blocks_parsed', ts: Date.now(), count: blocks.length });
             const blockMap = new Map(blocks.map(b => [b.path, b.content]));
 
+            // SECOND-PHASE FILL: ensure every CREATE line has a concrete block (non-placeholder)
+            try {
+                const createEntries = (parsed as any[]).filter(p => p.action === 'CREATE');
+                const missingCreates = createEntries.filter(p => !blockMap.has(p.path));
+                const placeholderCreates = createEntries.filter(p => blockMap.has(p.path) && /Placeholder created|Second-phase fallback/i.test(blockMap.get(p.path)!));
+                const needFill = [...missingCreates, ...placeholderCreates];
+                if (needFill.length) {
+                    const gen = await generateFileBodiesForPlan(project.id, prompt, needFill.map(f => ({ action: f.action, path: f.path, note: f.note })));
+                    assistantContent += '\n' + gen;
+                    // Re-parse newly added blocks (append only new ones to map)
+                    const newBlocks: RegExpExecArray[] = [];
+                    blockRegex.lastIndex = 0;
+                    let mb: RegExpExecArray | null;
+                    while ((mb = blockRegex.exec(assistantContent)) !== null) {
+                        const pth = mb[1].trim();
+                        if (!blockMap.has(pth) || /Placeholder created|Second-phase fallback/i.test(blockMap.get(pth)!)) {
+                            blockMap.set(pth, mb[2]);
+                        }
+                    }
+                    steps.push({ type: 'second_phase_missing_filled', ts: Date.now(), files: needFill.map(f => f.path) });
+                }
+            } catch (e: any) {
+                steps.push({ type: 'second_phase_fill_error', ts: Date.now(), error: e?.message });
+            }
+
             try {
                 const created: string[] = [];
                 const updated: string[] = [];
@@ -651,7 +726,8 @@ export async function POST(req: NextRequest) {
                     const idx = files.findIndex(f => f.path === path);
                     if (idx !== -1) { files[idx] = { path, content }; updated.push(path); }
                 };
-                for (const p of parsed) {
+                const planEntries = parsed as any[];
+                for (const p of planEntries) {
                     if (!('action' in p)) continue;
                     const { action, path, note } = p as any;
                     if (action === 'CREATE') {
@@ -686,7 +762,17 @@ export async function POST(req: NextRequest) {
     }
     const assistantMessage = await prisma.chatMessage.create({ data: { userId, projectId: project.id, role: 'assistant', content: assistantContent } });
 
-    const snapshot = await prisma.projectSnapshot.create({ data: { projectId: project.id, files } });
+    // Best practice: enforce core files existence (first code phase or any time after parse)
+    const coreAdded = ensureCoreFiles(files, project.name, prompt);
+    if (coreAdded.length) {
+        steps.push({ type: 'core_files_synthesized', ts: Date.now(), added: coreAdded });
+    }
+
+    const filePlanStep: any = steps.find(s => s.type === 'file_plan');
+    const planMetaForSnapshot = filePlanStep ? {
+        planLines: (filePlanStep.plan || []).map((p: any) => p.path ? `${p.action} ${p.path} ${p.note || ''}` : (p.raw || '')).filter(Boolean).slice(0, 80)
+    } : undefined;
+    const snapshot = await prisma.projectSnapshot.create({ data: { projectId: project.id, files, planMeta: planMetaForSnapshot as any } as any });
     console.log('[api/chat] snapshot created', { snapshotId: snapshot.id, fileCount: files.length });
     try { console.log('[api/chat] snapshot file list', files.map(f => ({ path: f.path, len: (f.content || '').length })).slice(0, 40)); } catch { }
     steps.push({ type: 'snapshot_complete', ts: Date.now(), snapshotId: snapshot.id });
@@ -703,10 +789,17 @@ export async function POST(req: NextRequest) {
         steps.push({ type: 'realtime_error', ts: Date.now(), error: e?.message });
     }
 
-    // Deployment disabled (preview-only mode)
-    const deploymentUrl = null;
+    // Auto-deploy (code phase) if enabled & env present
+    let deploymentUrl: string | null = null;
     await prisma.project.update({ where: { id: project.id }, data: { lastSnapshotId: snapshot.id, status: 'LIVE' } });
-    steps.push({ type: 'deploy_skipped', ts: Date.now(), reason: 'preview_only_mode' });
+    if (process.env.AUTO_DEPLOY_ON_GENERATION === 'true' && process.env.VERCEL_TOKEN) {
+        setTimeout(() => {
+            runDeploymentRoutine({ projectId: project.id, userId, auto: true }).catch((e: any) => console.warn('[api/chat] auto-deploy error', e?.message));
+        }, 50);
+        steps.push({ type: 'autodeploy_scheduled', ts: Date.now(), phase: 'code' });
+    } else {
+        steps.push({ type: 'deploy_skipped', ts: Date.now(), reason: 'preview_only_mode' });
+    }
     // Immediate verification read-back (debugging missing lastSnapshotId issue)
     try {
         const verify = await prisma.project.findUnique({ where: { id: project.id }, select: { lastSnapshotId: true, status: true } });
@@ -732,7 +825,12 @@ export async function POST(req: NextRequest) {
         }
     }
 
-    await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date() } });
+    try {
+        const filePlanApplied = [...steps].reverse().find(s => s.type === 'file_plan_applied');
+        await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date(), createdFiles: filePlanApplied?.created || [], updatedFiles: filePlanApplied?.updated || [], deletedFiles: filePlanApplied?.deleted || [] } as any });
+    } catch (e) {
+        await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date() } });
+    }
     console.log('[api/chat] routine completed', { routineId: routine.id });
     maybeSummarize(project.id).catch(() => { });
 
@@ -768,6 +866,13 @@ export async function POST(req: NextRequest) {
         }
         if (displayAssistant.length > 1600) displayAssistant = displayAssistant.slice(0, 1600) + '\n…';
     } catch { }
+    // Schedule background enrichment (auto) if enabled & not already enrich phase
+    if (!enrichMode && process.env.AUTO_BACKGROUND_ENRICH === 'true') {
+        steps.push({ type: 'auto_enrich_scheduled', ts: Date.now() });
+        setTimeout(() => {
+            runAutoEnrichRoutine({ projectId: project.id, userId, basePrompt: prompt }).catch(e => console.warn('[api/chat] auto_enrich error', e?.message));
+        }, 8000);
+    }
     return NextResponse.json({ projectId: project.id, projectName: project.name, projectType: project.type, typeConfidence: project.typeConfidence, deploymentUrl, messages: [userMessage, assistantMessage], displayAssistant, snapshotId: snapshot.id, creditsDeducted: GENERATION_CREDIT_COST, balance: newBalance, routineId: routine.id, steps, model: model || OPENAI_MODEL });
 }
 
@@ -790,7 +895,8 @@ async function runBackgroundCodePhase(args: { projectId: string; userId: string;
         let files: { path: string; content: string }[] = [];
         if (previousSnapshot) files = (previousSnapshot.files as any[]).map((f: any) => ({ path: f.path, content: f.content }));
         else files = generateFiles(project.name, prompt);
-        let assistantContent = await generateAssistantReply(prompt, { diffSummary, projectId, model, planOnly: false });
+        const enrichMode = false; // enrichment not auto-triggered in background phase
+        let assistantContent = await generateAssistantReply(prompt, { diffSummary, projectId, model, planOnly: false, enrichMode });
         // Reuse existing parsing logic by lightly duplicating critical parts (reduced for brevity)
         try {
             const planSectionMatch = assistantContent.match(/File Plan:\n([\s\S]*?)(?:\n\n[0-9]+\)|\n1\)|\n1\)|$)/i);
@@ -801,6 +907,21 @@ async function runBackgroundCodePhase(args: { projectId: string; userId: string;
             const blocks: { path: string; content: string }[] = []; let m: RegExpExecArray | null;
             while ((m = blockRegex.exec(assistantContent)) !== null) blocks.push({ path: m[1], content: m[2] });
             const blockMap = new Map(blocks.map(b => [b.path, b.content]));
+            // Fill missing CREATE blocks (background)
+            try {
+                const createEntries = parsed.filter(p => (p as any).action === 'CREATE');
+                const missing = createEntries.filter((p: any) => !blockMap.has(p.path));
+                if (missing.length) {
+                    const gen = await generateFileBodiesForPlan(projectId, prompt, missing.map((f: any) => ({ action: f.action, path: f.path, note: f.note })));
+                    assistantContent += '\n' + gen;
+                    blockRegex.lastIndex = 0; // reparse
+                    let mb: RegExpExecArray | null;
+                    while ((mb = blockRegex.exec(assistantContent)) !== null) blockMap.set(mb[1].trim(), mb[2]);
+                    steps.push({ type: 'second_phase_missing_filled', ts: Date.now(), files: missing.map((f: any) => f.path), phase: 'background_code' });
+                }
+            } catch (e: any) {
+                steps.push({ type: 'second_phase_fill_error', ts: Date.now(), error: e?.message, phase: 'background_code' });
+            }
             const created: string[] = []; const updated: string[] = [];
             const ensureCreate = (path: string, content: string) => { const idx = files.findIndex(f => f.path === path); if (idx === -1) { files.push({ path, content }); created.push(path); } else { files[idx] = { path, content }; updated.push(path); } };
             const ensureUpdate = (path: string, content: string) => { const idx = files.findIndex(f => f.path === path); if (idx !== -1) { files[idx] = { path, content }; updated.push(path); } };
@@ -809,24 +930,157 @@ async function runBackgroundCodePhase(args: { projectId: string; userId: string;
                 if (action === 'CREATE') ensureCreate(path, blockMap.get(path) || `// Placeholder (missing block) for ${path} - ${note}`);
                 else if (action === 'UPDATE') ensureUpdate(path, blockMap.get(path) || (files.find(f => f.path === path)?.content + `\n// AI update (${new Date().toISOString()}) - ${note}` || `// Update placeholder for ${path}`));
             }
-            // Always update preview.html synthetic to code phase
+            // Preview handling (do NOT overwrite an explicit model-provided preview.html block)
             const parsedSections = parsePlanSections(assistantContent);
-            const previewHtml = buildPreviewHtml({ projectName: project.name, prompt, planLines: parsedSections.planLines, summary: parsedSections.summary, proposed: parsedSections.proposed, pitfalls: parsedSections.pitfalls, todos: parsedSections.todos, phase: 'code' });
-            const previewIdx = files.findIndex(f => f.path === 'preview.html');
-            if (previewIdx >= 0) files[previewIdx] = { path: 'preview.html', content: previewHtml }; else files.push({ path: 'preview.html', content: previewHtml });
+            const hadPreviewBefore = files.some(f => f.path === 'preview.html');
+            const modelProvidedPreview = blockMap.has('preview.html');
+            if (modelProvidedPreview) {
+                // ensure applied already via plan processing above (CREATE/UPDATE path)
+                steps.push({ type: 'preview_preserved_model', ts: Date.now() });
+            } else {
+                // Only synthesize if missing (prefer earlier visual draft persisted in previous snapshot)
+                if (!hadPreviewBefore) {
+                    let visual = await generateVisualSiteDraft(prompt, parsedSections.planLines, project.name);
+                    let strategy = 'visual_model_code_phase';
+                    if (!visual) {
+                        // Fallback to site mock (clean, no planning metadata) rather than plan summary HTML
+                        visual = buildSiteMockHtml({
+                            projectName: project.name,
+                            prompt,
+                            planLines: parsedSections.planLines,
+                            summary: parsedSections.summary,
+                            proposed: parsedSections.proposed,
+                            pitfalls: parsedSections.pitfalls,
+                            todos: parsedSections.todos,
+                            phase: 'code'
+                        });
+                        strategy = 'visual_mock_code_phase';
+                    }
+                    files.push({ path: 'preview.html', content: visual });
+                    steps.push({ type: 'preview_synthesized_code_phase', ts: Date.now(), strategy });
+                } else {
+                    steps.push({ type: 'preview_retained_prior', ts: Date.now() });
+                }
+            }
             steps.push({ type: 'background_files_applied', ts: Date.now(), created, updated });
         } catch (e: any) {
             steps.push({ type: 'background_parse_error', ts: Date.now(), error: e?.message });
         }
         const assistantMessage = await prisma.chatMessage.create({ data: { userId, projectId, role: 'assistant', content: assistantContent } });
-        const snapshot = await prisma.projectSnapshot.create({ data: { projectId, files } });
+        const parsedSectionsBg = parsePlanSections(assistantContent);
+        const snapshot = await prisma.projectSnapshot.create({
+            data: {
+                projectId, files, planMeta: {
+                    planLines: parsedSectionsBg.planLines,
+                    summary: parsedSectionsBg.summary,
+                    proposed: parsedSectionsBg.proposed,
+                    pitfalls: parsedSectionsBg.pitfalls,
+                    todos: parsedSectionsBg.todos
+                } as any
+            } as any
+        });
         await prisma.project.update({ where: { id: projectId }, data: { lastSnapshotId: snapshot.id, status: 'LIVE' } });
         try { if (process.env.PUSHER_APP_ID && process.env.PUSHER_KEY) await pusher.trigger(`project-${projectId}`, 'files.updated', { projectId, snapshotId: snapshot.id }); } catch { }
         steps.push({ type: 'background_snapshot_complete', ts: Date.now(), snapshotId: snapshot.id });
-        await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date() } });
+        try {
+            const filePlanApplied = [...steps].reverse().find(s => s.type === 'background_files_applied');
+            await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date(), createdFiles: filePlanApplied?.created || [], updatedFiles: filePlanApplied?.updated || [], deletedFiles: [] } as any });
+        } catch {
+            await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date() } });
+        }
+        if (process.env.AUTO_DEPLOY_ON_GENERATION === 'true' && process.env.VERCEL_TOKEN) {
+            setTimeout(() => {
+                runDeploymentRoutine({ projectId, userId, auto: true }).catch((e: any) => console.warn('[api/chat] auto-deploy (background) error', e?.message));
+            }, 80);
+            steps.push({ type: 'autodeploy_scheduled', ts: Date.now(), phase: 'background_code' });
+        }
         maybeSummarize(projectId).catch(() => { });
     } catch (e: any) {
         try { await prisma.routine.create({ data: { userId, projectId, kind: 'BACKGROUND_CODE_ERROR', status: 'ERROR', steps: [{ type: 'background_error', error: e?.message, ts: Date.now() }] } }); } catch { }
+    }
+}
+
+// Automatic enrichment routine (lightweight incremental improvements after initial code phase)
+async function runAutoEnrichRoutine(args: { projectId: string; userId: string; basePrompt: string; model?: string }) {
+    const { projectId, userId, basePrompt, model } = args;
+    if (!prismaAvailable || !prisma) return;
+    try {
+        const project = await prisma.project.findUnique({ where: { id: projectId } });
+        if (!project?.lastSnapshotId) return;
+        const previousSnapshot: any = await prisma.projectSnapshot.findUnique({ where: { id: project.lastSnapshotId } });
+        if (!previousSnapshot) return;
+        const existingFiles = (previousSnapshot.files as any[]) as { path: string; content: string }[];
+        if (existingFiles.length > 14) return; // project already reasonably rich
+        const routine = await prisma.routine.create({ data: { userId, projectId, kind: 'ENRICH_AUTO', status: 'RUNNING', steps: [] } });
+        const steps: any[] = [{ type: 'auto_enrich_start', ts: Date.now(), baselineFileCount: existingFiles.length }];
+        let workingFiles: { path: string; content: string }[] = existingFiles.map(f => ({ ...f }));
+        // Resolve passes via new enrichment mode configuration scaffold
+        const { resolveEnrichmentPassConfig, summarizeConfig } = await import('@/src/lib/enrichConfig');
+        const envMax = parseInt(process.env.ENRICH_MAX_PASSES || '0', 10) || undefined;
+        const mode = process.env.ENRICH_MODE || 'balanced';
+        const cfg = resolveEnrichmentPassConfig({ existingFileCount: existingFiles.length, requestedMode: mode, envMaxPasses: envMax });
+        const MAX_PASSES = cfg.maxPasses;
+        steps.push({ type: 'auto_enrich_pass_config', ts: Date.now(), configuredMax: MAX_PASSES, mode, rationale: cfg.rationale, baselineCount: existingFiles.length, envMax: envMax || null });
+        for (let pass = 1; pass <= MAX_PASSES; pass++) {
+            // Fresh heuristic suggestions each pass
+            let heuristicPlan = '';
+            let suggestions: any[] = [];
+            try {
+                const { deriveEnrichmentTargets } = await import('@/src/lib/enrichmentHeuristics');
+                suggestions = deriveEnrichmentTargets(workingFiles);
+                // Filter out already existing paths to avoid redundant prompts
+                suggestions = suggestions.filter(s => !workingFiles.some(f => f.path === s.path));
+                if (suggestions.length) {
+                    heuristicPlan = 'Heuristic Suggested File Plan Additions (cap 4):\n' + suggestions.map(s => `${s.action} ${s.path} – ${s.note}`).join('\n');
+                }
+            } catch { /* ignore */ }
+            if (!heuristicPlan && pass > 1) {
+                steps.push({ type: 'auto_enrich_pass_skip_no_targets', ts: Date.now(), pass });
+                break; // nothing new to add
+            }
+            steps.push({ type: 'auto_enrich_pass_start', ts: Date.now(), pass, heuristicSuggestionCount: suggestions.length });
+            const enrichPrompt = basePrompt + `\n\n(Enrichment Pass ${pass}/${MAX_PASSES}) Focus on small, high-value improvements: up to 2 new components or pages, light styling, minimal state.` + (heuristicPlan ? ('\n\n' + heuristicPlan) : '');
+            const assistantContent = await generateAssistantReply(enrichPrompt, { diffSummary: null, projectId, model, enrichMode: true });
+            steps.push({ type: 'enrich_assistant_received', ts: Date.now(), length: assistantContent.length, pass });
+            try {
+                const planSectionMatch = assistantContent.match(/File Plan:\n([\s\S]*?)(?:\n\n[0-9]+\)|\n1\)|\n1\)|$)/i);
+                const planRaw = planSectionMatch ? planSectionMatch[1].trim() : '';
+                const planLines = planRaw.split('\n').map(l => l.trim()).filter(l => /^(CREATE|UPDATE|DELETE)\b/i.test(l));
+                steps.push({ type: 'auto_enrich_plan_parsed', ts: Date.now(), planLineCount: planLines.length, pass });
+                const parsed = planLines.map(l => { const m = l.match(/^(CREATE|UPDATE|DELETE)\s+([^\s]+)\s*[–-]?\s*(.*)$/i); return m ? { action: m[1].toUpperCase(), path: m[2], note: m[3] || '' } : null; }).filter(Boolean) as any[];
+                const blockRegex = /<file path=\"([^\"]+)\">[\r\n]*([\s\S]*?)[\r\n]*<\/file>/g;
+                const blocks: { path: string; content: string }[] = []; let mb: RegExpExecArray | null;
+                while ((mb = blockRegex.exec(assistantContent)) !== null) blocks.push({ path: mb[1], content: mb[2] });
+                const blockMap = new Map(blocks.map(b => [b.path, b.content]));
+                const created: string[] = []; const updated: string[] = []; const deleted: string[] = [];
+                const ensureCreate = (path: string, content: string) => { const idx = workingFiles.findIndex(f => f.path === path); if (idx === -1) { workingFiles.push({ path, content }); created.push(path); } else { workingFiles[idx] = { path, content }; updated.push(path); } };
+                const ensureUpdate = (path: string, content: string) => { const idx = workingFiles.findIndex(f => f.path === path); if (idx !== -1) { workingFiles[idx] = { path, content }; updated.push(path); } };
+                for (const p of parsed) {
+                    if (p.action === 'CREATE') ensureCreate(p.path, blockMap.get(p.path) || `// Enrich placeholder for ${p.path}`);
+                    else if (p.action === 'UPDATE') ensureUpdate(p.path, blockMap.get(p.path) || (workingFiles.find(f => f.path === p.path)?.content + '\n// Enrich update'));
+                    else if (p.action === 'DELETE') { const idx = workingFiles.findIndex(f => f.path === p.path); if (idx !== -1) { workingFiles.splice(idx, 1); deleted.push(p.path); } }
+                }
+                steps.push({ type: 'auto_enrich_pass_applied', ts: Date.now(), pass, created, updated, deleted });
+                // Early stop if nothing material added
+                if (!created.length && !updated.length) {
+                    steps.push({ type: 'auto_enrich_no_effect_stop', ts: Date.now(), pass });
+                    break;
+                }
+            } catch (e: any) {
+                steps.push({ type: 'auto_enrich_parse_error', ts: Date.now(), error: e?.message, pass });
+                break; // abort further passes on parse error
+            }
+        }
+        // Core files safeguard
+        const addedCore = ensureCoreFiles(workingFiles, project.name, basePrompt);
+        if (addedCore.length) steps.push({ type: 'core_files_synthesized', ts: Date.now(), added: addedCore, phase: 'auto_enrich' });
+        const snapshot = await prisma.projectSnapshot.create({ data: { projectId, files: workingFiles } as any });
+        await prisma.project.update({ where: { id: projectId }, data: { lastSnapshotId: snapshot.id } });
+        steps.push({ type: 'auto_enrich_snapshot_complete', ts: Date.now(), snapshotId: snapshot.id, finalFileCount: workingFiles.length });
+        try { if (process.env.PUSHER_APP_ID && process.env.PUSHER_KEY) await pusher.trigger(`project-${projectId}`, 'files.updated', { projectId, snapshotId: snapshot.id }); } catch { }
+        await prisma.routine.update({ where: { id: routine.id }, data: { steps, status: 'SUCCESS', finishedAt: new Date() } });
+    } catch (e: any) {
+        try { await prisma.routine.create({ data: { userId, projectId, kind: 'ENRICH_AUTO_ERROR', status: 'ERROR', steps: [{ type: 'auto_enrich_error', error: e?.message, ts: Date.now() }] } }); } catch { }
     }
 }
 

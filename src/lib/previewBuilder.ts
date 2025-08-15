@@ -1,27 +1,27 @@
 export interface PreviewSections {
-    projectName: string;
-    prompt: string;
-    planLines: string[];
-    summary: string;
-    proposed: string[];
-    pitfalls: string[];
-    todos: string[];
-    phase?: 'plan' | 'code';
+  projectName: string;
+  prompt: string;
+  planLines: string[];
+  summary: string;
+  proposed: string[];
+  pitfalls: string[];
+  todos: string[];
+  phase?: 'plan' | 'code';
 }
 
 function esc(html: string) {
-    return html.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] || c));
+  return html.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] || c));
 }
 
 export function buildPreviewHtml(data: PreviewSections) {
-    const { projectName, prompt, planLines, summary, proposed, pitfalls, todos, phase = 'plan' } = data;
-    const badge = phase === 'plan' ? '<span class="badge badge-plan">PLAN DRAFT</span>' : '<span class="badge badge-code">IMPLEMENTED</span>';
-    const fmtList = (items: string[], cls: string) => items.length ? `<ul class="list ${cls}">${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : '<p class="empty">None</p>';
-    const planList = fmtList(planLines, 'plan-lines');
-    const proposedList = fmtList(proposed, 'proposed');
-    const pitfallsList = fmtList(pitfalls, 'pitfalls');
-    const todosList = fmtList(todos, 'todos');
-    return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><title>${esc(projectName)} Preview</title><meta name="viewport" content="width=device-width,initial-scale=1"/><style>
+  const { projectName, prompt, planLines, summary, proposed, pitfalls, todos, phase = 'plan' } = data;
+  const badge = phase === 'plan' ? '<span class="badge badge-plan">PLAN DRAFT</span>' : '<span class="badge badge-code">IMPLEMENTED</span>';
+  const fmtList = (items: string[], cls: string) => items.length ? `<ul class="list ${cls}">${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : '<p class="empty">None</p>';
+  const planList = fmtList(planLines, 'plan-lines');
+  const proposedList = fmtList(proposed, 'proposed');
+  const pitfallsList = fmtList(pitfalls, 'pitfalls');
+  const todosList = fmtList(todos, 'todos');
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><title>${esc(projectName)} Preview</title><meta name="viewport" content="width=device-width,initial-scale=1"/><style>
   :root{--bg:#0f1115;--panel:#111827;--border:#1e293b;--grad:linear-gradient(90deg,#6366f1,#8b5cf6);--text:#f1f5f9;--muted:#94a3b8;--warn:#fbbf24;font-family:system-ui,sans-serif}
   *{box-sizing:border-box}html,body{margin:0;padding:0;background:var(--bg);color:var(--text)}body{line-height:1.5;-webkit-font-smoothing:antialiased}
   main{max-width:1040px;margin:0 auto;padding:44px 40px 120px}
@@ -62,11 +62,11 @@ export function buildPreviewHtml(data: PreviewSections) {
 
 // Build an immediate "final result" style static site mock (hero + sections) so user sees an approximate end state.
 export function buildSiteMockHtml(data: PreviewSections & { features?: string[] }) {
-    const { projectName, prompt, planLines, summary, todos, features } = data;
-    const feats = (features && features.length ? features : planLines.map(l => l.replace(/^(CREATE|UPDATE|DELETE)\s+/i, '').split(/\s/)[0])).slice(0, 6);
-    const featItems = feats.map(f => `<div class="card"><h3>${esc(f.replace(/[`<>]/g, ''))}</h3><p>${esc('Implements ' + f.replace(/[._/]/g, ' ') + ' functionality.')}</p></div>`).join('\n');
-    const todoList = todos && todos.length ? todos.slice(0, 6).map(t => `<li>${esc(t)}</li>`).join('') : '';
-    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8" />
+  const { projectName, prompt, planLines, summary, todos, features } = data;
+  const feats = (features && features.length ? features : planLines.map(l => l.replace(/^(CREATE|UPDATE|DELETE)\s+/i, '').split(/\s/)[0])).slice(0, 6);
+  const featItems = feats.map(f => `<div class="card"><h3>${esc(f.replace(/[`<>]/g, ''))}</h3><p>${esc('Implements ' + f.replace(/[._/]/g, ' ') + ' functionality.')}</p></div>`).join('\n');
+  const todoList = todos && todos.length ? todos.slice(0, 4).map(t => `<li>${esc(t)}</li>`).join('') : '';
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8" />
   <title>${esc(projectName)} – Preview</title><meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
   :root { --bg:#0b0f17; --panel:#111b27; --border:#1e2b3a; --grad:linear-gradient(90deg,#6366f1,#8b5cf6); --rad:22px; --text:#e2e8f0; font-family:system-ui,sans-serif; }
@@ -79,37 +79,34 @@ export function buildSiteMockHtml(data: PreviewSections & { features?: string[] 
   .card:before{content:'';position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 30% 20%,rgba(255,255,255,0.05),transparent 70%)}
   .card h3{margin:0 0 8px;font-size:1rem;letter-spacing:.5px}
   footer{padding:38px 28px;font-size:.7rem;text-align:center;opacity:.5}
-  nav.tabs{display:flex;gap:8px;padding:10px 28px 0;max-width:1080px;margin:0 auto}
-  nav.tabs span{font-size:.65rem;letter-spacing:.12em;background:#1e293b;color:#93adc6;padding:5px 10px;border-radius:40px;text-transform:uppercase}
-  section.todos{max-width:1080px;margin:0 auto 70px;background:var(--panel);border:1px solid var(--border);padding:26px 28px;border-radius:var(--rad)}
-  section.todos h2{margin:0 0 14px;font-size:1rem;letter-spacing:.08em;text-transform:uppercase}
+  section.todos{max-width:1080px;margin:0 auto 70px;background:var(--panel);border:1px solid var(--border);padding:24px 26px;border-radius:var(--rad)}
+  section.todos h2{margin:0 0 12px;font-size:1rem;letter-spacing:.05em;text-transform:uppercase}
   ul.todo{list-style:disc;padding-left:1.2rem;margin:0}
   </style></head><body>
-  <nav class="tabs"><span>Plan Draft</span><span>Visual Mock</span><span>Not Deployed</span></nav>
   <header class="hero">
     <h1>${esc(projectName)}</h1>
     <p class="lead">${esc(summary || prompt.slice(0, 160))}</p>
   </header>
   <div class="cards">${featItems}</div>
-  ${todoList ? `<section class="todos"><h2>Next TODOs</h2><ul class="todo">${todoList}</ul></section>` : ''}
-  <footer>Static synthetic preview – approximate end result. Dynamic behavior, data, auth & state will arrive shortly.</footer>
+  ${todoList ? `<section class="todos"><h2>Focus Areas</h2><ul class="todo">${todoList}</ul></section>` : ''}
+  <footer>Static draft preview.</footer>
   </body></html>`;
 }
 
 export function parsePlanSections(text: string) {
-    const planMatch = text.match(/File Plan:\n([\s\S]*?)(?:\n\n1\)|\n1\)|$)/i);
-    const planLines = planMatch ? planMatch[1].split('\n').map(l => l.trim()).filter(Boolean) : [];
-    const secMatch = text.match(/\n1\)\s*Summary[\s\S]*/i);
-    let summary = ''; let proposedRaw = ''; let pitfallsRaw = ''; let todosRaw = '';
-    if (secMatch) {
-        const blocks = text.split(/\n(?=[1-4]\))/).slice(1);
-        for (const b of blocks) {
-            if (/^1\)/.test(b)) summary = b.replace(/^1\)\s*Summary of intent\s*/i, '').trim();
-            else if (/^2\)/.test(b)) proposedRaw = b.replace(/^2\)\s*Proposed changes.*\n?/i, '').trim();
-            else if (/^3\)/.test(b)) pitfallsRaw = b.replace(/^3\)\s*Potential pitfalls\s*/i, '').trim();
-            else if (/^4\)/.test(b)) todosRaw = b.replace(/^4\)\s*Next TODO bullets\s*/i, '').trim();
-        }
+  const planMatch = text.match(/File Plan:\n([\s\S]*?)(?:\n\n1\)|\n1\)|$)/i);
+  const planLines = planMatch ? planMatch[1].split('\n').map(l => l.trim()).filter(Boolean) : [];
+  const secMatch = text.match(/\n1\)\s*Summary[\s\S]*/i);
+  let summary = ''; let proposedRaw = ''; let pitfallsRaw = ''; let todosRaw = '';
+  if (secMatch) {
+    const blocks = text.split(/\n(?=[1-4]\))/).slice(1);
+    for (const b of blocks) {
+      if (/^1\)/.test(b)) summary = b.replace(/^1\)\s*Summary of intent\s*/i, '').trim();
+      else if (/^2\)/.test(b)) proposedRaw = b.replace(/^2\)\s*Proposed changes.*\n?/i, '').trim();
+      else if (/^3\)/.test(b)) pitfallsRaw = b.replace(/^3\)\s*Potential pitfalls\s*/i, '').trim();
+      else if (/^4\)/.test(b)) todosRaw = b.replace(/^4\)\s*Next TODO bullets\s*/i, '').trim();
     }
-    const bulletize = (raw: string) => raw.split(/\n|\r/).map(l => l.replace(/^[-*+]\s*/, '').trim()).filter(l => l.length > 0).slice(0, 40);
-    return { planLines, summary, proposed: bulletize(proposedRaw), pitfalls: bulletize(pitfallsRaw), todos: bulletize(todosRaw) };
+  }
+  const bulletize = (raw: string) => raw.split(/\n|\r/).map(l => l.replace(/^[-*+]\s*/, '').trim()).filter(l => l.length > 0).slice(0, 40);
+  return { planLines, summary, proposed: bulletize(proposedRaw), pitfalls: bulletize(pitfallsRaw), todos: bulletize(todosRaw) };
 }

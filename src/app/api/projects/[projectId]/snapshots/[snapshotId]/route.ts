@@ -12,11 +12,11 @@ export async function GET(_: Request, { params }: { params: { projectId: string;
         if (!prisma || !prismaAvailable) {
             return NextResponse.json({ bypassed: true, files: [] }, { status: 200 });
         }
-        const snap = await prisma.projectSnapshot.findFirst({
+        const snap: any = await prisma.projectSnapshot.findFirst({
             where: { id: params.snapshotId, projectId: params.projectId }
         });
         if (!snap) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-        return NextResponse.json({ files: snap.files });
+        return NextResponse.json({ files: snap.files, planMeta: snap.planMeta || null, createdAt: snap.createdAt });
     } catch (e: any) {
         return NextResponse.json({ error: 'unavailable', message: e?.message }, { status: 200 });
     }
